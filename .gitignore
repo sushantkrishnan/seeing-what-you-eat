@@ -1,0 +1,20 @@
+# Whitelist: everything is ignored unless listed below.
+*
+!.gitignore
+!README.md
+!code/
+!code/*.py
+!code/README.md
+!results/
+!results/*.json
+!results/predictions.csv
+!results/gate_scores.csv
+!results/figures/
+!results/figures/*.png
+!n5k_metadata/
+!n5k_metadata/*
+!data/
+!data/n5k_overhead_manifest.json
+!data/n5k_overhead_sizes.json
+!01_Proposal.pdf
+!01_MethodResults.pdf
