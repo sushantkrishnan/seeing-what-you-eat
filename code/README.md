@@ -36,30 +36,35 @@ dependency**; every research question downstream is a `groupby` on the cached
 features. A stalled member costs one column, not the project.
 
 ```
-n5k.py         data access — dishes, splits, image paths.  ← single source of truth
-degrade.py     the perturbation ladder (8 families x 5 severities + screenshot)
-quality.py     no-model image-quality metrics (the Mondrian conditioning variables)
+n5k.py         data access — dishes, splits, plate sessions, image paths.  ← single source of truth
+degrade.py     the perturbation ladder (8 families x 5 severities + screenshot + phone)
+quality.py     no-model image-quality metrics
 features.py    frozen backbone -> cached embeddings.        ← THE inference pass
 fetch_images.py resumable HTTPS downloader
 oracle_ladder.py the ceiling analysis (metadata only, reads no images)
-gate_bench.py  predictor + pixel-gate benchmark -> results/     ← reproduces the deck
-gate_probe.py  six model-aware gates, any backbone, + the degeneracy control
+gate_bench.py  predictor + pixel metrics per (dish, rung) -> results/predictions.csv
+gate_probe.py  every gate on one protocol, three backbones, cluster bootstrap, paired
+               tests, pairwise tests -> results/gate_probe.json, results/gate_scores.csv
+conformal.py   split conformal ranges, plain and adaptive width -> results/conformal.json
 error_sources.py  where the error comes from, and which part of it is gateable
-figures.py     all eleven deck figures
-build_deck.py  the proposal deck -> 01_Proposal_v6.pptx
+figures.py     every deck figure -> results/figures/
+build_deck.py  the proposal deck (Aug 2026) -> 01_Proposal_v6.pptx
+build_update_deck.py  the update deck (Sep 2026) -> 01_MethodResults.pptx
+md2pdf.py, wordcount.py  talk-script tooling
 ```
 
 Order matters at the bottom of that list: `gate_bench.py` writes `results/predictions.csv`
-and `results/gate_bench.json`, `figures.py` reads the JSON, and `build_deck.py` refuses to
-run if the figures are missing.
+(which `gate_probe.py` reads for the pixel metrics), `figures.py` reads all three JSONs, and
+the deck builders refuse to run if the figures are missing.
 
 ```bash
 cd code
-../.venv/bin/python gate_bench.py            # ~4 min: heads, errors, reject curves
-../.venv/bin/python gate_probe.py --all --json  # ~1 min, needs all three feature caches
-../.venv/bin/python error_sources.py         # ~2 s
-../.venv/bin/python figures.py               # ~20 s
-../.venv/bin/python build_deck.py            # ~2 s
+../.venv/bin/python gate_bench.py               # ~4.5 min: heads, errors, pixel metrics
+../.venv/bin/python gate_probe.py --all --json  # ~1 min: every gate, 2,000 resamples
+../.venv/bin/python conformal.py --all --json   # ~25 s
+../.venv/bin/python error_sources.py            # ~2 s
+../.venv/bin/python figures.py                  # ~30 s
+../.venv/bin/python build_update_deck.py        # ~2 s
 ```
 
 **Standardise the features before the ridge.** The 2,304 dims are `[CLS | patch-mean |
@@ -79,17 +84,41 @@ overhead RGB imagery**, so the usable set is smaller. Always go through
 | test | 709 | 507 (71.5%) |
 
 Conformal needs a calibration set the heads never saw. `n5k.fit_calib_split()` carves
-train into **1,929 fit / 826 calibration** with a fixed seed (760). The official test
-split is never touched by either — do not recalibrate on test.
+train into **1,924 fit / 831 calibration** with a fixed seed (760), **by plate session**
+(since 17 Sep 2026; `by_session=False` reproduces the proposal's dish-level 1,929 / 826
+carve). The official test split is never touched by either — do not recalibrate on test.
 
-826 calibration points supports Mondrian binning comfortably: at 4 bins that is ~207
-per bin, well above the ⌈1/α⌉−1 = 9 minimum for a 90% interval.
+## Plate sessions
+
+Dish ids are unix timestamps. Scans of one plate session arrive ~40 s apart; sessions are
+hours or days apart, so the gap distribution is bimodal and `n5k.session_ids()` splits it
+at 600 s: **367 sessions in train, 127 in test**. |calorie error| has an intraclass
+correlation of 0.34 within a session, so the session is the unit for the fit/calibration
+carve and for every bootstrap (`gate_probe.py`, `conformal.py`). The dish-level carve had
+put 98% of calibration dishes in a session with a fit dish; fixing it changed the ridge
+penalty picked on calibration and moved the predictor from 73.4 to 70.9 kcal, inside its
+own interval [62.0, 80.4].
+
+The official train/test split does not straddle sessions in a way that matters: test
+dishes with a same-session train neighbour score 72.9 kcal against 75.9 without.
+
+## Significance
+
+`gate_probe.py` resamples the 127 test sessions 2,000 times and recomputes every gate's
+whole risk-coverage curve on the same resample, so comparisons are paired. It reports, per
+gate and backbone: MAE at every 5% of coverage with a 95% percentile interval; AURC (mean
+error over coverages 10..100%); the share of the random-to-perfect AURC gap captured; the
+paired difference to the random gate with interval and two-sided bootstrap p, Holm-corrected
+across the ten candidate gates at each coverage; and pairwise tests between model-aware
+gates at 90% and 50%.
 
 ## Degradation ladder
 
 `degrade.py` defines 8 families — `blur, motion, jpeg, downscale, temp, dark, crop,
-noise` — at 5 severities each, plus a compound `screenshot` rung. Specs are strings:
-`blur:3`, `jpeg:30`, `blur:3+jpeg:40`, `clean`, `screenshot`.
+noise` — at 5 severities each, plus two compound rungs: `screenshot` and `phone` (blur 1 px,
+JPEG 75, warm shift 0.1, crop to 85%; an imitation of a hand-held phone photo, stated as
+such, since Nutrition5k has no phone photos). Specs are strings: `blur:3`, `jpeg:30`,
+`blur:3+jpeg:40`, `clean`, `screenshot`, `phone`.
 
 Degradations are applied on the fly and are deterministic given `(image, spec)`, so
 they are exactly reproducible without storing 1.45 GB per rung.
