@@ -11,6 +11,11 @@ Writes into results/figures/:
   backbones.png                 three frozen backbones compared       (slide 7)
   gates.png                     every gate at 50% coverage            (slide 9)
   degeneracy.png                which gates win by refusing big meals (slide 9)
+Update deck (build_update_deck.py) additionally uses:
+  curves_ci.png, significance.png, sessions.png, panel_phone.png, backbones.png,
+  reader.png                    the risk–coverage axes with only reference and ceiling (slide 7)
+  significance_sized.png        the forest plot plain and inside predicted-size bands (v2 slide 11)
+  conformal_kcal.png            coverage by true meal size beside by-difficulty (slide 13)
 
 Series colours are validated for colour-vision deficiency (OKLab dE, adjacent pairs,
 scripts/validate_palette.js) and every mark is directly labelled, so identity never
@@ -456,11 +461,75 @@ def significance(coverage="0.9") -> None:
     axes[0].set_yticklabels([FOREST_LABELS[n] for n in FOREST_ORDER[::-1]], fontsize=10)
     fig.text(0.5, 0.075, "change in error against refusing at random, refusing 1 photo in "
              "10  (kcal; left is better)", ha="center", fontsize=10, color=MUTED)
-    fig.text(0.5, 0.012, "filled: better than random after Holm correction, p < 0.05     "
-             "hollow: not distinguishable from random     bars: 95% interval, bootstrap "
-             "over plate sessions", ha="center", fontsize=8.8, color=INK)
+    fig.text(0.5, 0.012, "filled: differs from random after Holm correction, p < 0.05 "
+             "(left of zero: better; right: worse)     hollow: not distinguishable     "
+             "bars: 95% interval, bootstrap over plate sessions", ha="center",
+             fontsize=8.8, color=INK)
     fig.tight_layout(pad=0.5, w_pad=1.2, rect=(0, 0.09, 1, 1))
     _save(fig, "significance.png")
+
+
+def significance_sized(coverage="0.9") -> None:
+    """The forest plot twice: plain, and with every gate refusing inside predicted-size
+    bands. Same kcal axis in both rows, so 'how much of the win was size' is read as
+    how far each marker moves toward zero between the rows.
+    """
+    res = json.loads((RESULTS / "gate_probe.json").read_text())
+    keys = [k for k in SHORT if k in res]
+    family = {g: (ORANGE if g in ("learned_error", "blend", "ensemble_spread") else
+                  BLUE if g == "pred_magnitude" else
+                  OLIVE if g in ("knn_dist", "mahalanobis") else MUTED)
+              for g in FOREST_ORDER}
+    rows = [("clean", "refuse 1 in 10 overall"),
+            ("clean_sized", "refuse 1 in 10 inside each\npredicted-size band")]
+
+    fig, axes = plt.subplots(2, len(keys), figsize=(10.4, 6.3), dpi=200,
+                             sharey=True, sharex=True)
+    for r, (block, row_label) in enumerate(rows):
+        for c, key in enumerate(keys):
+            ax = axes[r, c]
+            g = res[key][block]["gates"]
+            ax.axvline(0, color=INK, linewidth=1.0, zorder=2)
+            for i, name in enumerate(FOREST_ORDER):
+                if name not in g:
+                    continue
+                v = g[name]["vs_random"][coverage]
+                y = len(FOREST_ORDER) - 1 - i
+                lo, hi = v["ci"]
+                col = family[name]
+                sig = v.get("p_holm", 1.0) < 0.05
+                ax.plot([lo, hi], [y, y], color=col, linewidth=2.0,
+                        solid_capstyle="round", zorder=3)
+                ax.scatter([v["diff"]], [y], s=60, color=col if sig else "white",
+                           edgecolors=col, linewidths=1.8, zorder=4)
+            perfect = (g["perfect"]["mae"][coverage] - g["random"]["mae"][coverage])
+            ax.axvline(perfect, color=GREEN, linewidth=1.2, linestyle=(0, (3, 2)), zorder=2)
+            if r == 0:
+                ax.set_title(SHORT[key], fontsize=11, color=INK, fontweight="bold", pad=8)
+            if c == 0:
+                ax.text(perfect + 0.7, -1.0, "perfect refuser", color=GREEN, fontsize=8.8,
+                        ha="left", va="center", fontweight="bold")
+            ax.set_ylim(-1.6, len(FOREST_ORDER) - 0.4)
+            ax.set_xlim(-22, 12)
+            ax.set_xticks([-20, -10, 0, 10])
+            ax.grid(axis="x", color=GRID, linewidth=0.8, zorder=0)
+            ax.set_axisbelow(True)
+            ax.tick_params(labelsize=9.5, length=0)
+            for side in ("top", "right", "left"):
+                ax.spines[side].set_visible(False)
+        axes[r, 0].set_yticks(range(len(FOREST_ORDER)))
+        axes[r, 0].set_yticklabels([FOREST_LABELS[n] for n in FOREST_ORDER[::-1]],
+                                   fontsize=9.8)
+        axes[r, 0].set_ylabel(row_label, fontsize=10, color=INK, fontweight="bold",
+                              labelpad=14, linespacing=1.4)
+    fig.text(0.56, 0.055, "change in calorie error against refusing at random, 90% "
+             "answered  (kcal; left is better)", ha="center", fontsize=10, color=MUTED)
+    fig.text(0.56, 0.012, "filled: differs from random after Holm correction, p < 0.05 "
+             "(left of zero: better; right: worse)    hollow: not distinguishable    "
+             "bars: 95% interval, bootstrap over plate sessions", ha="center",
+             fontsize=8.6, color=INK)
+    fig.tight_layout(pad=0.5, w_pad=1.0, h_pad=1.2, rect=(0, 0.07, 1, 1))
+    _save(fig, "significance_sized.png")
 
 
 def conformal_chart(model=PRIMARY) -> None:
@@ -518,6 +587,100 @@ def conformal_chart(model=PRIMARY) -> None:
     _save(fig, "conformal.png")
 
 
+# ---------------------------------------------------------------- update deck, slide 7
+def reader_chart(model=PRIMARY) -> None:
+    """The risk–coverage axes with only the reference and the ceiling drawn.
+
+    Shown before any gate result so the audience learns the axes once: refusing at
+    random is flat, a perfect refuser falls, a gate is judged by where it sits between
+    them at the operating point, and by the area it leaves.
+    """
+    res = json.loads((RESULTS / "gate_probe.json").read_text())[model]
+    covs = res["coverages"]
+    cov = [100 * c for c in covs]
+    g = res["clean"]["gates"]
+    rnd = [g["random"]["mae"][str(c)] for c in covs]
+    prf = [g["perfect"]["mae"][str(c)] for c in covs]
+
+    fig, ax = plt.subplots(figsize=(6.6, 4.0), dpi=200)
+    ax.fill_between(cov, prf, rnd, color=ORANGE, alpha=0.08, linewidth=0, zorder=1)
+    ax.plot(cov, rnd, color=MUTED, linestyle=(0, (4, 3)), linewidth=2.0, zorder=3)
+    ax.plot(cov, prf, color=GREEN, linewidth=2.4, solid_capstyle="round", zorder=3)
+    ax.text(12, max(rnd) + 4.5, "refusing at random: the reference", color=MUTED,
+            fontsize=10.5, fontweight="bold", ha="left", va="bottom", zorder=5)
+    ax.text(47, prf[covs.index(0.45)] - 5, "a perfect refuser: the ceiling", color=GREEN,
+            fontsize=10.5, fontweight="bold", ha="left", va="top", zorder=5)
+    ax.text(34, 0.5 * (rnd[covs.index(0.35)] + prf[covs.index(0.35)]),
+            "every real gate lands\nsomewhere in here", color=ORANGE, fontsize=10.5,
+            fontweight="bold", ha="center", va="center", linespacing=1.4, zorder=5)
+
+    i90 = covs.index(0.9)
+    ax.axvline(90, color=INK, linewidth=1.0, linestyle=(0, (2, 3)), zorder=2)
+    ax.annotate("", xy=(90, prf[i90]), xytext=(90, rnd[i90]),
+                arrowprops=dict(arrowstyle="<->", color=INK, linewidth=1.3,
+                                shrinkA=2, shrinkB=2), zorder=5)
+    ax.plot([90, 90], [rnd[i90], prf[i90]], "o", color=INK, markersize=5, zorder=6)
+    ax.text(88, 97, f"at 90% answered: random {rnd[i90]:.0f}, perfect {prf[i90]:.0f}.\n"
+            f"A gate has {rnd[i90] - prf[i90]:.0f} kcal to win here.",
+            fontsize=9.5, color=INK, ha="right", va="top", linespacing=1.4, zorder=6)
+    ax.text(90.6, 3, "the operating\npoint we report", fontsize=9.2, color=INK,
+            ha="left", va="bottom", linespacing=1.35, zorder=6)
+    ax.set_xlabel("share of photos the app still answers", fontsize=10.5)
+    ax.set_ylabel("calorie error on those photos (kcal)", fontsize=10.5)
+    ax.set_xlim(8, 102)
+    ax.set_ylim(0, 100)
+    ax.set_xticks([10, 25, 50, 75, 90, 100])
+    ax.set_xticklabels([f"{t}%" for t in [10, 25, 50, 75, 90, 100]], fontsize=10)
+    _clean(ax)
+    fig.tight_layout(pad=0.4)
+    _save(fig, "reader.png")
+
+
+# ---------------------------------------------------------------- update deck, slide 13
+def conformal_kcal_chart(model=PRIMARY) -> None:
+    """Coverage by true meal size (the honest cut) beside coverage by difficulty.
+
+    The difficulty quartiles are cut on the same signal that sets the adaptive width,
+    so the adaptive range is flat there partly by construction. Meal size is not, and
+    both ranges fail the same way on the largest quarter.
+    """
+    blob = json.loads((RESULTS / "conformal.json").read_text())[model]
+    res, target = blob["clean"], 100 * (1 - blob["alpha"])
+    plain, adapt = res["constant"], res["ensemble_spread"]
+    x, w = np.arange(4), 0.36
+
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.6), dpi=200, sharey=True)
+    panels = [("by_kcal", ["smallest\nquarter", "2nd", "3rd", "largest\nquarter"],
+               "coverage, by true meal size"),
+              ("by_difficulty", ["easiest\nquarter", "2nd", "3rd", "hardest\nquarter"],
+               "coverage, by how hard the dish looks")]
+    for ax, (key, qs, title) in zip(axes, panels):
+        b1 = ax.bar(x - w / 2, [100 * c for c in plain[key]["coverage"]], w, color=MUTED,
+                    zorder=3, label="same width for every photo")
+        b2 = ax.bar(x + w / 2, [100 * c for c in adapt[key]["coverage"]], w, color=ORANGE,
+                    zorder=3, label="width set by ensemble disagreement")
+        for bars in (b1, b2):
+            for b in bars:
+                ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 1.0,
+                        f"{b.get_height():.0f}", ha="center", fontsize=9.5, color=INK,
+                        fontweight="bold", zorder=6,
+                        bbox=dict(facecolor="white", edgecolor="none", pad=1.0))
+        ax.axhline(target, color=GREEN, linestyle=(0, (4, 3)), linewidth=1.5, zorder=4)
+        ax.text(3.5, target + 0.8, f"target {target:.0f}%", fontsize=9.5, color=GREEN,
+                fontweight="bold", ha="right", va="bottom", zorder=6)
+        ax.set_xticks(x)
+        ax.set_xticklabels(qs, fontsize=9.5)
+        ax.set_ylim(55, 104)
+        ax.set_title(title, fontsize=11, color=INK, fontweight="bold", pad=8)
+        _clean(ax)
+    axes[0].set_ylabel("share of dishes inside the range (%)", fontsize=10)
+    handles, labels_ = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels_, loc="lower center", ncol=2, fontsize=9.5, frameon=False,
+               bbox_to_anchor=(0.5, 0.0))
+    fig.tight_layout(pad=0.5, w_pad=1.6, rect=(0, 0.07, 1, 1))
+    _save(fig, "conformal_kcal.png")
+
+
 def sessions_chart() -> None:
     """Why the unit of analysis is the plate session: the gap between scans is bimodal."""
     ids = n5k.usable_split("test", local_only=True) + n5k.usable_split("train", local_only=True)
@@ -563,7 +726,10 @@ def main() -> None:
     degeneracy()
     curves_ci()
     significance()
+    significance_sized()
     conformal_chart()
+    conformal_kcal_chart()
+    reader_chart()
     sessions_chart()
     panel_phone()
 
