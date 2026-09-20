@@ -46,6 +46,26 @@ LEAK DISCIPLINE, which is the whole ballgame for `learned_error`:
   (and, since 17 Sep, share no plate session with them);
   the error predictor is trained on those calibration errors;
   everything is reported on the 507 TEST dishes, which nothing was fit on.
+
+CONTROLLING FOR SIZE (added 20 Sep). The control above ties the learned head at 90%
+answered, and the head's score has rank correlation ~0.77 with the predicted calorie
+count, so a plain MAE-at-coverage cannot say whether a gate reads difficulty or just
+size. Two further blocks answer that:
+  clean_sized   the same gates, same kcal loss, but every gate must refuse the same
+                share of photos WITHIN each predicted-size band (SIZE_BANDS bands, edges
+                from the calibration split's predictions, so nothing on test defines
+                them). Size cannot be the lever across bands; the control collapses to
+                ~0 by construction, and whatever a gate keeps is difficulty signal.
+  clean_rel     the same gates on relative error, |err| / max(true, REL_FLOOR_KCAL).
+                This loss has the opposite bias (it rewards refusing small meals, and
+                16% of test dishes are under 50 kcal), so it is a secondary check.
+Each gate also carries `rho_size` (Spearman with the predicted calorie count) and
+`rho_within_size` (mean Spearman with |error| inside predicted-size quartiles).
+
+THE RANDOM REFERENCE is analytic: refusing at random has expected selective risk equal
+to the answer-everything risk at every coverage, so that is the curve every gate is
+tested against, on the same resample. Before 20 Sep it was one fixed random draw,
+whose seed noise (±1–2 kcal) leaked into every paired difference.
 """
 from __future__ import annotations
 
@@ -65,6 +85,9 @@ N_BOOTSTRAP = 32
 KNN_K = 10
 PCA_K = 64
 BIG_DISH_KCAL = 400
+SMALL_DISH_KCAL = 100      # "small meal" for the selectivity report
+REL_FLOOR_KCAL = 50        # relative error is |err| / max(true, floor); 83 test dishes sit under it
+SIZE_BANDS = 10            # predicted-size bands for the size-controlled block
 BACKBONES = ["vit_base_patch16_clip_224.openai",
              "vit_base_patch16_siglip_224.v2_webli",
              "vit_base_patch16_dinov3.lvd1689m"]
@@ -131,6 +154,11 @@ class Fitted:
     alphas: dict
     calib_err: np.ndarray                     # |error| of the calorie head on calibration
     scorers: dict = field(default_factory=dict)
+    band_edges: np.ndarray = None             # predicted-kcal band edges, from calibration
+
+    def size_band(self, pred_kcal: np.ndarray) -> np.ndarray:
+        """Which predicted-size band a photo falls in. Edges come from calibration."""
+        return np.searchsorted(self.band_edges, pred_kcal, side="right")
 
     def features(self, split: str, tag: str) -> tuple[np.ndarray, list[str]]:
         """Standardised features for the usable dishes of one split and rung.
@@ -194,6 +222,10 @@ def fit_gates(model: str) -> Fitted:
     base = np.column_stack([f.scorers[k](Xcal) for k in
                             ("mahalanobis", "knn_dist", "ensemble_spread", "learned_error")])
     f.blend_head = ridge_fit(base, cal_err, 1.0)
+    # size bands for the size-controlled block: deciles of the predicted calorie count
+    # on the calibration dishes, so the test split plays no part in defining them
+    cal_pred = ridge_predict(heads["cal"], Xcal)
+    f.band_edges = np.quantile(cal_pred, np.linspace(0, 1, SIZE_BANDS + 1)[1:-1])
     return f
 
 
@@ -220,6 +252,25 @@ def curve(score: np.ndarray, err: np.ndarray, coverages=COVERAGES) -> np.ndarray
     return csum[ks - 1] / ks
 
 
+def curve_banded(score: np.ndarray, err: np.ndarray, band: np.ndarray,
+                 coverages=COVERAGES) -> np.ndarray:
+    """MAE on the kept set when the gate must keep the same share INSIDE every band.
+
+    Refusing 10% overall by refusing 10% of each predicted-size band takes size off
+    the table as a lever between bands; what is left is how well the gate ranks
+    photos of about the same size.
+    """
+    ncov = len(coverages)
+    tot, cnt = np.zeros(ncov), np.zeros(ncov)
+    for b in np.unique(band):
+        idx = np.flatnonzero(band == b)
+        csum = np.cumsum(err[idx][np.argsort(score[idx], kind="stable")])
+        ks = np.array([max(1, int(round(c * len(idx)))) for c in coverages])
+        tot += csum[ks - 1]
+        cnt += ks
+    return tot / cnt
+
+
 def aurc(vals: np.ndarray, coverages=COVERAGES) -> float:
     """Mean error across coverages 10%..100%, by the trapezoid rule. In kcal."""
     c = np.array(coverages)[::-1]
@@ -240,26 +291,62 @@ def holm(pvals: dict[str, float]) -> dict[str, float]:
 
 # ---------------------------------------------------------------- one block
 def evaluate_block(gates: dict[str, np.ndarray], err: np.ndarray, true: np.ndarray,
-                   session: np.ndarray, n_boot: int, seed: int = SEED) -> dict:
-    """Score every gate on one set of rows, with the cluster bootstrap."""
+                   session: np.ndarray, n_boot: int, seed: int = SEED,
+                   band: np.ndarray = None, size: np.ndarray = None) -> dict:
+    """Score every gate on one set of rows, with the cluster bootstrap.
+
+    `gates` holds the candidate gates only; the perfect refuser (score = the loss) and
+    the random reference (analytic: the answer-everything loss at every coverage) are
+    added here. With `band`, every gate keeps the same share inside each band. `size`
+    is the predicted calorie count, for the two size diagnostics.
+    """
     n = len(err)
-    names = list(gates)
-    big = true > BIG_DISH_KCAL
+    names = list(gates) + ["random", "perfect"]
+    big, small = true > BIG_DISH_KCAL, true < SMALL_DISH_KCAL
+    risk = (lambda s, e: curve_banded(s, e, band)) if band is not None else curve
+    flat = lambda e: np.full(len(COVERAGES), e.mean())        # the random gate's expectation
+
+    def refuse_sets(score, c):
+        """Kept and refused rows at coverage c, honouring the bands if any."""
+        if band is None:
+            order = np.argsort(score, kind="stable")
+            k = max(1, int(round(c * n)))
+            return order[:k], order[k:]
+        kept, refused = [], []
+        for b in np.unique(band):
+            idx = np.flatnonzero(band == b)
+            order = idx[np.argsort(score[idx], kind="stable")]
+            k = max(1, int(round(c * len(idx))))
+            kept.append(order[:k]), refused.append(order[k:])
+        return np.concatenate(kept), np.concatenate(refused)
 
     # point estimates
-    point = {g: curve(gates[g], err) for g in names}
+    point = {g: risk(gates[g], err) for g in gates}
+    point["perfect"] = risk(err, err)
+    point["random"] = flat(err)
     rows = {}
     for g in names:
-        order = np.argsort(gates[g], kind="stable")
-        r = {"rho": spearman(gates[g], err),
-             "mae": {str(c): float(v) for c, v in zip(COVERAGES, point[g])},
+        r = {"mae": {str(c): float(v) for c, v in zip(COVERAGES, point[g])},
              "aurc": aurc(point[g]), "selectivity": {}}
-        for c in (0.9, 0.5):
-            k = max(1, int(round(c * n)))
-            kept, refused = order[:k], order[k:]
-            r["selectivity"][str(c)] = {
-                "kept_mean_kcal": float(true[kept].mean()),
-                "big_refused": float(big[refused].sum() / max(big.sum(), 1))}
+        if g == "random":
+            r["rho"] = 0.0
+            for c in (0.9, 0.5):
+                r["selectivity"][str(c)] = {"kept_mean_kcal": float(true.mean()),
+                                            "big_refused": 1 - c, "small_refused": 1 - c}
+        else:
+            s = err if g == "perfect" else gates[g]
+            r["rho"] = spearman(s, err)
+            if size is not None:
+                r["rho_size"] = spearman(s, size)
+                q = np.searchsorted(np.quantile(size, [0.25, 0.5, 0.75]), size, side="right")
+                r["rho_within_size"] = float(np.mean(
+                    [spearman(s[q == j], err[q == j]) for j in range(4)]))
+            for c in (0.9, 0.5):
+                kept, refused = refuse_sets(s, c)
+                r["selectivity"][str(c)] = {
+                    "kept_mean_kcal": float(true[kept].mean()),
+                    "big_refused": float(big[refused].sum() / max(big.sum(), 1)),
+                    "small_refused": float(small[refused].sum() / max(small.sum(), 1))}
         rows[g] = r
     gap = rows["random"]["aurc"] - rows["perfect"]["aurc"]
     for g in names:
@@ -276,10 +363,14 @@ def evaluate_block(gates: dict[str, np.ndarray], err: np.ndarray, true: np.ndarr
         draw = rng.choice(sess_ids, size=len(sess_ids), replace=True)
         idx = np.concatenate([members[s] for s in draw])
         e = err[idx]
+        bb = band[idx] if band is not None else None
         boot_all[b] = e.mean()
-        for g in names:
+        boot_curve["random"][b], boot_rho["random"][b] = flat(e), 0.0
+        boot_curve["perfect"][b] = curve_banded(e, e, bb) if bb is not None else curve(e, e)
+        boot_rho["perfect"][b] = 1.0
+        for g in gates:
             s = gates[g][idx]
-            boot_curve[g][b] = curve(s, e)
+            boot_curve[g][b] = curve_banded(s, e, bb) if bb is not None else curve(s, e)
             boot_rho[g][b] = spearman(s, e)
 
     def ci(a):
@@ -380,7 +471,8 @@ def probe(model: str, n_boot: int, pixel: dict, score_rows: list) -> dict:
                 **{g: float(px[g][i]) for g in PIXEL_GATES},
             })
 
-    for label, tags in [("clean", ["clean"]), ("pooled", list(blocks))]:
+    for label, tags in [("clean", ["clean"]), ("pooled", list(blocks)),
+                        ("clean_sized", ["clean"]), ("clean_rel", ["clean"])]:
         err = np.concatenate([blocks[t]["err"] for t in tags])
         true = np.concatenate([blocks[t]["y"] for t in tags])
         session = np.concatenate([blocks[t]["session"] for t in tags])
@@ -390,10 +482,21 @@ def probe(model: str, n_boot: int, pixel: dict, score_rows: list) -> dict:
             v = np.concatenate([blocks[t]["pixel"][g] for t in tags])
             if np.isfinite(v).all():
                 gates[g] = PIXEL_SIGN[g] * v
-        rng = np.random.default_rng(SEED)
-        gates["random"] = rng.random(len(err))
-        gates["perfect"] = err
-        out[label] = evaluate_block(gates, err, true, session, n_boot)
+        size = gates["pred_magnitude"]
+        if label == "clean_sized":
+            band = f.size_band(size)
+            out[label] = evaluate_block(gates, err, true, session, n_boot,
+                                        band=band, size=size)
+            out[label]["bands"] = int(SIZE_BANDS)
+            out[label]["band_edges"] = [float(x) for x in f.band_edges]
+            out[label]["band_sizes"] = [int((band == b).sum()) for b in range(SIZE_BANDS)]
+        elif label == "clean_rel":
+            rel = err / np.maximum(true, REL_FLOOR_KCAL)
+            out[label] = evaluate_block(gates, rel, true, session, n_boot, size=size)
+            out[label]["floor_kcal"] = REL_FLOOR_KCAL
+            out[label]["n_under_floor"] = int((true < REL_FLOOR_KCAL).sum())
+        else:
+            out[label] = evaluate_block(gates, err, true, session, n_boot, size=size)
         out[label]["rungs"] = tags
 
     # per-rung error, for the ladder table
@@ -442,6 +545,29 @@ def report(res: dict) -> None:
                   f"{100 * sel['0.9']['big_refused']:>10.0f}%{100 * sel['0.5']['big_refused']:>8.0f}%")
         print("   stars: Holm-corrected paired bootstrap test against the random gate "
               "at that coverage (* .05, ** .01, *** .001)\n")
+
+    # the two size-controlled views, at the operating point
+    sz, rl = res["clean_sized"], res["clean_rel"]
+    print(f"=== CONTROLLING FOR SIZE, clean photos, 90% answered  "
+          f"({sz['bands']} predicted-size bands, {sz['band_sizes']} test dishes each; "
+          f"relative error floor {rl['floor_kcal']} kcal, {rl['n_under_floor']} dishes under it)")
+    print(f"{'gate':<16}{'rho size':>9}{'rho in-band':>12}{'plain kcal':>17}"
+          f"{'within bands':>17}{'relative %':>17}")
+    plain = res["clean"]["gates"]
+    for g in MODEL_GATES + PIXEL_GATES + ["perfect"]:
+        if g not in plain:
+            continue
+        def d(blk, scale=1.0):
+            r = blk["gates"][g]
+            if g == "perfect":
+                v = r["mae"]["0.9"] - blk["gates"]["random"]["mae"]["0.9"]
+                return f"{scale * v:+8.1f}       "
+            v = r["vs_random"]["0.9"]
+            return f"{scale * v['diff']:+8.1f}{stars(v['p_holm']):<3}     "
+        print(f"{g:<16}{plain[g].get('rho_size', 0):>+9.2f}{plain[g].get('rho_within_size', 0):>+12.2f}"
+              f"  {d(res['clean'])}{d(sz)}{d(rl, 100)}")
+    print("   each column: change against refusing at random at 90% answered, paired, "
+          "Holm-corrected over the ten candidates\n")
     p = res["predictor"]
     lo, hi = p["cal_mae_ci"]
     print(f"predictor on clean test: {p['cal_mae']:.1f} [{lo:.1f}, {hi:.1f}] kcal | "

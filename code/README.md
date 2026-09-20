@@ -50,6 +50,9 @@ error_sources.py  where the error comes from, and which part of it is gateable
 figures.py     every deck figure -> results/figures/
 build_deck.py  the proposal deck (Aug 2026) -> 01_Proposal_v6.pptx
 build_update_deck.py  the update deck (Sep 2026) -> 01_MethodResults.pptx
+build_update_deck_v2.py  the size-controlled update deck (20 Sep) -> 01_MethodResults_v2.pptx
+build_update_deck_v3.py  the same argument in plain sentences, notes read from the v3 script
+                         -> 01_MethodResults_v3.pptx   (the deck to submit)
 md2pdf.py, wordcount.py  talk-script tooling
 ```
 
@@ -60,11 +63,11 @@ the deck builders refuse to run if the figures are missing.
 ```bash
 cd code
 ../.venv/bin/python gate_bench.py               # ~4.5 min: heads, errors, pixel metrics
-../.venv/bin/python gate_probe.py --all --json  # ~1 min: every gate, 2,000 resamples
+../.venv/bin/python gate_probe.py --all --json  # ~2 min: every gate, 4 blocks, 2,000 resamples
 ../.venv/bin/python conformal.py --all --json   # ~25 s
 ../.venv/bin/python error_sources.py            # ~2 s
 ../.venv/bin/python figures.py                  # ~30 s
-../.venv/bin/python build_update_deck.py        # ~2 s
+../.venv/bin/python build_update_deck_v3.py     # ~2 s (v2 and v1 builders still run)
 ```
 
 **Standardise the features before the ridge.** The 2,304 dims are `[CLS | patch-mean |
@@ -111,6 +114,36 @@ error over coverages 10..100%); the share of the random-to-perfect AURC gap capt
 paired difference to the random gate with interval and two-sided bootstrap p, Holm-corrected
 across the ten candidate gates at each coverage; and pairwise tests between model-aware
 gates at 90% and 50%.
+
+The random reference is analytic (added 20 Sep): refusing at random has expected selective
+risk equal to the answer-everything risk at every coverage, so that is the curve every gate
+is tested against, on the same resample. Before that it was one fixed random draw, whose
+seed noise (±1–2 kcal) leaked into every paired difference; ensemble disagreement clears
+the Holm correction at 90% against the analytic reference and did not against the draw.
+
+## Controlling for size
+
+|error| scales with meal size, so a gate can post a good MAE at fixed coverage by refusing
+large meals; the `pred_magnitude` control ties the learned error head at 90% answered, and
+the head's score has Spearman 0.77 with the predicted calorie count. `gate_probe.py`
+therefore writes two further blocks per backbone:
+
+- `clean_sized`: the same gates, same kcal loss, but every gate must refuse the same share
+  **inside each predicted-size band** (`SIZE_BANDS = 10`, edges from the calibration
+  split's predictions). Size cannot be the lever across bands. The control collapses to
+  −1.0 / +0.4 / −0.4 kcal at 90% (CLIP / SigLIP 2 / DINOv3), which validates the design;
+  the learned head keeps −6.5 / −6.5 / −4.7 (Holm p < 0.01 on all three, ahead of the
+  control at paired p ≤ 0.02); the perfect refuser keeps −14.5 / −14.9 / −12.9 of its
+  −20.4 / −19.9 / −17.9. About half the head's win, and a third of the ceiling, was size.
+- `clean_rel`: the same gates on relative error `|err| / max(true, 50)`. This loss has the
+  opposite bias (its oracle refuses 0% of 400+ kcal meals and 27% of sub-100 kcal ones; 83
+  test dishes are under 50 kcal), so it is a secondary check: at 90% no gate beats random,
+  the control is significantly worse (+1.6 points, Holm p < 0.01, all three), the head is
+  null, ensemble disagreement leans the right way (−2.2 to −2.9, n.s. after Holm).
+
+Each gate also carries `rho_size` (Spearman with the predicted calorie count) and
+`rho_within_size` (mean Spearman with |error| inside predicted-size quartiles), and every
+`selectivity` entry now has `small_refused` beside `big_refused`.
 
 ## Degradation ladder
 

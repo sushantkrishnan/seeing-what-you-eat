@@ -7,14 +7,20 @@ figures.py first. Every number on these slides is read from results/*.json at bu
 time, so the deck cannot drift from the code.
 
 RUBRIC MAP (Presentation2_rubic.txt, 20 points). Slide numbers in brackets.
-  objectives & problem vs proposal [2]      changes since proposal + feedback [3]
-  dataset with rationale, splits [4]        methodology, tuning, measures, compute [5]
-  existing vs our results, tagged [6]       results so far [7-11]
-  challenges, timeline vs plan, roles [12]  conclusions and next steps [13]
-  citations, GenAI acknowledgement, GitHub link [1, 14]
+  objectives & problem vs proposal [2]      motivation, why the gate [3]
+  changes since proposal + feedback [4]     dataset with rationale, splits [5]
+  methodology, tuning, compute [6]          measures and significance [7]
+  existing vs our results, tagged [8]       results so far [9-13]
+  challenges, timeline vs plan, roles [14]  conclusions and next steps [15]
+  citations, GenAI acknowledgement, GitHub link [1, 16]
 
-Eight minutes, five speakers at ~90 s each, 7:30 spoken. Speaker names are not
+Eight minutes, five speakers at ~95 s each, 7:45 spoken. Speaker names are not
 printed on slides; SLIDE_PLAN drives the timing budget and the notes.
+
+AT A GLANCE (19 Sep rebuild). One claim per slide as the headline, one picture or
+one small table, at most three short lines, provenance tags. Every "because" lives in
+update-talk-script.md, not on the slide. The order builds the idea up: problem, why
+the gate, data, pipeline, how to read the charts, then the results on those axes.
 
 House style, unchanged from v6: short declarative sentences, no aphorisms, no
 "not X but Y" inversions, few dashes, no novelty-by-absence claims. Every number is
@@ -42,26 +48,35 @@ REPO_URL = "github.com/sushantkrishnan/seeing-what-you-eat"
 CLIP = "vit_base_patch16_clip_224.openai"
 SIGLIP = "vit_base_patch16_siglip_224.v2_webli"
 DINO = "vit_base_patch16_dinov3.lvd1689m"
+PIXEL = ("lap_var", "tenengrad", "blockiness", "hf_ratio")
+
+# The two-stage projection: an oracle handed ingredient names and grams, corrupted by
+# the stage error our own heads measure (22% mass, one name in five). oracle_ladder.py,
+# the perturbed_o3 block, n = 507. Not read from JSON because that script writes none.
+TWO_STAGE_KCAL = 87
+PUBLISHED_RGB, PUBLISHED_BEST = 70.6, 41.3
 
 SLIDE_PLAN = [
-    ("Nisarg",  40, "Recap: problem, proposal, objectives"),
-    ("Nisarg",  45, "Changes since the proposal, feedback"),
-    ("Sushant", 40, "Dataset, splits, sessions"),
-    ("Sushant", 45, "Experimental design and evaluation"),
-    ("Keanu",   40, "Existing vs ours: the predictor"),
-    ("Keanu",   45, "Result 1: pixel signals, error sources"),
+    ("Nisarg",  35, "Recap: problem, proposal, objectives"),
+    ("Nisarg",  30, "Why the gate: 71 to 50, against 87"),
+    ("Nisarg",  30, "Feedback and changes"),
+    ("Sushant", 30, "Dataset, splits, sessions"),
+    ("Sushant", 30, "Pipeline, the one knob, compute"),
+    ("Sushant", 35, "How to read every chart"),
+    ("Keanu",   30, "Existing vs ours: the predictor"),
+    ("Keanu",   45, "Result 1: pixel signals"),
     ("Shreya",  40, "Result 2: the curve"),
-    ("Shreya",  40, "Result 2: significance on three backbones"),
+    ("Shreya",  30, "Result 2: three backbones"),
     ("Shreya",  35, "Result 3: what each gate refuses"),
-    ("Kevin",   45, "Result 4: confidence ranges"),
-    ("Kevin",   40, "Challenges, timeline, roles"),
-    ("Kevin",   20, "Conclusions and next steps"),
+    ("Kevin",   40, "Result 4: ranges"),
+    ("Kevin",   25, "Challenges, timeline, roles"),
+    ("Kevin",   30, "Conclusions"),
 ]
 
 REQUIRED_FIGS = ["plate_grid.png", "sessions.png", "backbones.png", "panel_clean.png",
                  "panel_blur6.png", "panel_crop04.png", "panel_phone.png",
                  "risk_coverage.png", "curves_ci.png", "significance.png",
-                 "degeneracy.png", "conformal.png"]
+                 "degeneracy.png", "conformal_kcal.png", "reader.png"]
 
 
 # ---------------------------------------------------------------- numbers
@@ -126,6 +141,21 @@ def fmt_ci(ci):
     return f"[{ci[0]:.0f}, {ci[1]:.0f}]"
 
 
+def fmt_p(p):
+    """Holm-corrected bootstrap p. The floor is 1/n_boot × 10 = 0.005, so never print
+    it as if it were exact."""
+    return "p < 0.01" if p < 0.01 else f"p = {p:.2f}"
+
+
+def strip(slide, y, h, label, body, *, size=11.5, label_size=11):
+    """One tinted strip: an accent label and one or two lines of body text."""
+    rect(slide, L - 0.18, y, CW + 0.36, h, fill=TINT)
+    t = tb(slide, L + 0.14, y + 0.10, CW - 0.3, h - 0.15)
+    para(t, [(label.upper() + "   ", {"color": ACCENT, "bold": True, "size": label_size}),
+             (body, {"color": INK, "size": size})], line=1.3, first=True)
+    return t
+
+
 # ---------------------------------------------------------------- slides
 def slide_title(prs):
     s = prs.slides.add_slide(prs.slide_layouts[6])
@@ -147,15 +177,14 @@ def slide_title(prs):
     para(t, [("Code and results:  ", {"color": MUTED}), (REPO_URL, {"color": INK, "bold": True})],
          size=14, space_before=14)
     notes(s, "Title only. Do not speak to this slide. Nisarg opens on slide 2. "
-             "Target 7:30 spoken, hard stop 8:00.")
+             "Target 7:45 spoken, hard stop 8:00.")
     return s
 
 
 def slide_recap(prs, n):
-    s = base(prs, "Recap", "The predictor is frozen. We study the gate.", 2)
+    s = base(prs, "Recap", "Every app answers every photo. We study the gate.", 2)
     y = s._body_top
 
-    # the diagram, as in the proposal
     bh = 0.66
     rect(s, L, y, 1.45, bh, fill=BG)
     t = tb(s, L, y + 0.19, 1.45, 0.4)
@@ -181,22 +210,19 @@ def slide_recap(prs, n):
     para(t, "“I can’t tell from this photo.”", size=12.5, color=INK, bold=True,
          align=PP_ALIGN.CENTER, first=True)
 
-    yy = y + 1.72
-    for label, body, col in [
-        ("THE PROBLEM",
-         "Calorie apps answer every photo with one number and never decline. A confident "
-         "wrong number is worse than no number.", MUTED),
-        ("WHAT WE PROPOSED",
-         "Freeze the predictor. Benchmark the signals an app could use to decide whether to "
-         "answer, between refusing at random and a perfect refuser.", INK),
+    yy = y + 1.80
+    for label, body in [
+        ("The problem", "Calorie apps return one number for every photo and never decline."),
+        ("What we proposed", "Freeze the predictor. Benchmark the signals that could decide "
+                             "whether to answer, between refusing at random and a perfect "
+                             "refuser."),
     ]:
         t = tb(s, L, yy, 8.9, 0.28)
-        para(t, label, size=11, color=ACCENT if col is INK else MUTED, bold=True, first=True)
+        para(t, label.upper(), size=11, color=ACCENT, bold=True, first=True)
         t = tb(s, L, yy + 0.27, 8.9, 0.7)
-        para(t, body, size=12.5, color=col, bold=(col is INK), line=1.32, first=True)
-        yy += 0.98
+        para(t, body, size=13, color=INK, line=1.32, first=True)
+        yy += 1.05
 
-    # objectives with status, right column
     x2 = 10.35
     eyebrow(s, x2, y, "Objectives · status", w=3.0)
     ry = y + 0.34
@@ -216,17 +242,60 @@ def slide_recap(prs, n):
              size=10.5, space_before=3)
         ry += 1.30
 
-    takeaway(s, "Headline question: which signals let an app know it is guessing, and can any "
-                "of them run on the phone?", y=6.22, size=14)
-    notes(s, "NISARG — 40s.\nSelf-contained recap, because the rubric asks for one. Walk the "
-             "diagram left to right once. Say 'the problem' and 'what we proposed' as two "
-             "separate sentences. Then point at the three objectives and their status: two "
-             "done, the third started early. Hand straight to the changes slide.")
+    takeaway(s, "Which signals let an app know it is guessing, and can any of them run on "
+                "the phone?", y=6.22, size=15)
+    notes(s, "NISARG — 35s.\nWalk the diagram once, left to right. The problem and the "
+             "proposal as two sentences. Point at the three objectives: two done, the third "
+             "started early. Say the headline question out loud, it is the sentence the "
+             "whole talk answers.")
+    return s
+
+
+def slide_why(prs, n):
+    s = base(prs, "Why the gate, not the predictor",
+             "Refusing one photo in ten beats a better predictor.", 3)
+    y = s._body_top
+    mae, perf = n["mae"], n["g90"]["perfect"]
+
+    eyebrow(s, L, y, "Our own numbers, 507 test dishes, calorie error in kcal  [ours]", w=9)
+    ty = y + 0.42
+    th = 2.55
+    tiles = [
+        (L, 3.15, BG, INK, f"{mae:.0f}", "answering every photo", "our frozen predictor"),
+        (L + 3.75, 3.15, TINT, GREEN, f"{perf:.0f}", "with a perfect refuser declining "
+                                                     "one photo in ten",
+         f"{round(mae) - round(perf):.0f} kcal of headroom, in refusing"),
+        (L + 7.90, 3.60, BG, ACCENT, str(TWO_STAGE_KCAL),
+         "a two-stage model that names and weighs the ingredients",
+         "with the stage error we measure: 22% on mass, one name in five  "
+         "[ours, oracle budget]"),
+    ]
+    for x, w, fill, col, big, lab, sub in tiles:
+        rect(s, x, ty, w, th, fill=fill)
+        t = tb(s, x + 0.25, ty + 0.15, w - 0.5, 1.0)
+        para(t, big, size=54, color=col, bold=True, first=True)
+        t = tb(s, x + 0.25, ty + 1.12, w - 0.5, 1.2)
+        para(t, lab, size=12.5, color=INK, bold=True, line=1.28, first=True)
+        para(t, sub, size=11, color=MUTED, line=1.28, space_before=4)
+    arrow(s, L + 3.22, ty + th / 2 - 0.12, 0.42, 0.24, color=GREEN)
+
+    caption(s, L, ty + th + 0.22, CW,
+            f"The best published number, {PUBLISHED_BEST:.0f} kcal, needed a depth sensor "
+            f"[1]. A phone photo has none. Published RGB: {PUBLISHED_RGB} kcal [1].",
+            size=12, color=INK)
+    takeaway(s, "The headroom is in refusing, not in predicting. So the predictor is frozen "
+                "and the gate is the object of study.", y=5.85, size=15)
+    notes(s, "NISARG — 30s.\nThree numbers, left to right. 71 is where we are. 50 is what "
+             "a perfect refuser would give us by declining one photo in ten: 21 kcal on the "
+             "table. 87 is where the ambitious route lands, naming and weighing the "
+             "ingredients, once you feed it the stage error we actually measure: worse than "
+             "what we have. The only number that beats us needed a depth camera. That is the "
+             "whole reason the predictor is frozen. Hand to feedback.")
     return s
 
 
 def slide_changes(prs, n):
-    s = base(prs, "Since the proposal", "What the markers asked, and what we changed.", 3)
+    s = base(prs, "Since the proposal", "What the markers asked, and what we changed.", 4)
     y = s._body_top
 
     eyebrow(s, L, y, "Feedback we received, and what we did with it", w=8.0)
@@ -235,71 +304,66 @@ def slide_changes(prs, n):
         ("Freezing the predictor and studying the gate is the right design.",
          "Kept. Nothing on the predictor side changed."),
         ("Which evaluation metrics, exactly?",
-         "One fixed set, stated on slide 5: error at a fixed answer rate, the area under the "
-         "whole curve, the share of the random-to-perfect gap captured, and what each gate "
-         "refuses. Ranges get coverage, width and a proper interval score."),
+         "One fixed set, on slide 7: error at a fixed answer rate, area under the curve, "
+         "share of the gap captured, and what each gate refuses."),
         ("How will you show a difference is significant?",
-         "Every number now carries a 95% interval from a bootstrap over plate sessions, and "
-         "every gate is tested against refusing at random with a Holm correction. Two "
-         "proposal claims did not survive this; slide 8 says which."),
+         "Every number carries a 95% interval from a bootstrap over plate sessions; every "
+         "gate is tested against random with a Holm correction. Two proposal claims did "
+         "not survive (slide 10)."),
     ]:
         if ry < y + 1:
-            rect(s, L - 0.18, ry - 0.06, CW + 0.36, 0.66, fill=BG)
+            rect(s, L - 0.18, ry - 0.06, CW + 0.36, 0.62, fill=BG)
         t = tb(s, L, ry, 4.2, 0.7)
-        para(t, fb, size=12, color=INK, bold=True, line=1.25, first=True)
+        para(t, fb, size=12.5, color=INK, bold=True, line=1.25, first=True)
         t = tb(s, L + 4.4, ry, 7.1, 0.7)
         para(t, did, size=11.5, color=MUTED, line=1.25, first=True)
-        ry += 0.74
+        ry += 0.72
 
-    ry += 0.04
+    ry += 0.10
     eyebrow(s, L, ry, "Changes we made, and why", w=8.0)
-    ry += 0.32
+    ry += 0.34
     for what, why in [
-        ("Calibration is now carved by plate session, not by dish.",
-         f"98% of calibration dishes shared a scanning session with a fit dish. Fixing it "
-         f"moved the predictor from 73.4 to {n['mae']:.1f} kcal, inside its own interval."),
-        ("We report the whole curve and quote the 90% answer rate.",
-         "That is where an app would sit. The proposal quoted 50%, where the picture is rosier."),
-        ("The phone-camera rung is in. The hidden-food rung is dropped.",
-         "Phone: late by three weeks. Hidden food: damage is 9% of the error, and we cannot "
-         "label occlusion honestly on this data."),
+        ("Calibration carved by plate session, not by dish.",
+         f"98% of calibration dishes shared a session with a fit dish. Fixed; the predictor "
+         f"moved 73.4 → {n['mae']:.1f} kcal, inside its interval  → slide 5"),
+        ("We quote 90% answered and show the whole curve.",
+         "Where an app would sit. The proposal quoted 50%, where every gate looks better  "
+         "→ slide 7"),
+        ("Phone rung in, late. Hidden-food rung dropped.",
+         "Damage is 9% of the error, and occlusion cannot be labelled honestly  → slide 9"),
         ("Confidence ranges started three weeks early.",
-         "The first cut is on slide 11. It found the next problem: the largest meals are "
-         "under-covered."),
+         "First cut done; it found the next problem, large meals  → slide 13"),
     ]:
         t = tb(s, L, ry, 4.2, 0.6)
-        para(t, what, size=11.5, color=INK, bold=True, line=1.22, first=True)
+        para(t, what, size=12, color=INK, bold=True, line=1.22, first=True)
         t = tb(s, L + 4.4, ry, 7.1, 0.6)
-        para(t, why, size=11, color=MUTED, line=1.22, first=True)
+        para(t, why, size=11.5, color=MUTED, line=1.22, first=True)
         ry += 0.58
 
-    notes(s, "NISARG — 45s.\nTop half is the feedback, verbatim in spirit: the design was "
-             "endorsed, the metrics and the significance were questioned. Say what we did "
-             "for each. Bottom half: four changes, each with its reason. The first is the "
-             "one to slow down on: we found a leak in our own calibration carve and fixed "
-             "it, and the headline number moved by 2.5 kcal, inside its interval. Nothing "
-             "was tuned on test. Hand to Sushant.")
+    notes(s, "NISARG — 30s.\nTop: the three things the markers said, and one sentence each "
+             "on what we did. Bottom: four changes, one line each, each pointing at the "
+             "slide where it bites. Slow down on the first: we found a leak in our own "
+             "calibration split, fixed it, and the headline moved 2.5 kcal inside its "
+             "interval. Nothing was tuned on test. Hand to Sushant.")
     return s
 
 
 def slide_dataset(prs, n):
-    s = base(prs, "Dataset", "Nutrition5k, and the unit of analysis we had missed.", 4)
+    s = base(prs, "Dataset", "507 test dishes are 127 plate sessions.", 5)
     y = s._body_top
 
     pic(s, "plate_grid.png", L, y + 0.02, 2.75)
     caption(s, L, y + 2.86, 2.75,
-            "Overhead RGB, one fixed rig, every ingredient weighed [1]. Chosen because the "
-            "per-ingredient truth lets us build a perfect refuser to measure against.",
-            size=10.5)
+            "Nutrition5k [1]: overhead photos, one rig, every ingredient weighed. The "
+            "weighed truth is what lets us build a perfect refuser.", size=10.5)
 
     x2 = 4.05
     eyebrow(s, x2, y, "Scans of one plate arrive 40 seconds apart", w=7.5)
     pic(s, "sessions.png", x2, y + 0.30, 6.5)
     caption(s, x2, y + 3.36, 7.45,
-            "So the 507 test dishes are 127 plate sessions, and error is correlated inside a "
-            "session (intraclass correlation 0.34). Sessions are the unit for the calibration "
-            "carve and for every confidence interval in this talk.",
-            size=11.5, color=INK, bold=True)
+            "Errors inside a session are correlated (intraclass correlation 0.34). The "
+            "session is the unit for the calibration carve and for every interval in this "
+            "talk.", size=12, color=INK, bold=True)
 
     cy = y + 4.22
     eyebrow(s, L, cy, "Splits", w=9.0)
@@ -318,134 +382,166 @@ def slide_dataset(prs, n):
         para(t, lbl, size=10, color=MUTED, align=PP_ALIGN.CENTER, space_before=2)
         if i < len(stages) - 1:
             arrow(s, x + bw + 0.06, cy + 0.22, 0.20, 0.16)
-    notes(s, "SUSHANT — 40s.\nLeft: what the data is, and why we chose it: weighed "
-             "ingredients mean we can compute a perfect refuser. Middle: the histogram is "
-             "the new thing. Dish ids are timestamps. Scans of the same plate are 40 seconds "
-             "apart; the next session is hours away. So the test set is 127 sessions, not "
-             "507 independent dishes, and errors inside a session are correlated. Bottom: "
-             "the official split, and our calibration carve, now by session. We never "
-             "touch the test split. Hand to the design slide.")
+    notes(s, "SUSHANT — 30s.\nLeft: what the data is and why: weighed ingredients give us "
+             "a perfect refuser to measure against. Middle, the histogram: dish ids are "
+             "timestamps; scans of one plate are 40 seconds apart, the next session is hours "
+             "away. So test is 127 sessions, not 507 independent dishes. Bottom: official "
+             "split untouched; train carved into fit and calibration by session.")
     return s
 
 
 def slide_design(prs, n):
-    s = base(prs, "Experimental design and evaluation",
-             "One pass, one file, one fixed set of measures.", 5)
+    s = base(prs, "Experimental design", "One frozen model, one linear head, one tuned knob.", 6)
     y = s._body_top
-    colw = 3.62
-    xs = [L, L + colw + 0.32, L + 2 * (colw + 0.32)]
 
-    blocks = [
-        ("The pipeline", [
-            "Frozen backbone (CLIP ViT-B/16; SigLIP 2 and DINOv3 as checks) → 2,304-d "
-            "features, cached once.",
-            "Standardise on the fit split, then a closed-form ridge head. No training loop, "
-            "so no convergence curve to show.",
-            f"Ridge alpha chosen on calibration over a 25-point quarter-decade grid "
-            f"(picked {n['alpha_cal']:.0f}). PCA k = 64, B = 32 heads, K = 10 neighbours: "
-            "fixed before looking at test.",
-            "8 damage levels × 507 dishes × 3 backbones = 12,168 rows, every gate score in "
-            "one CSV. Every result is a lookup on that file.",
-        ]),
-        ("What a gate is scored on", [
-            "Error (MAE, kcal) at a fixed answer rate; we quote 90%, and show the whole "
-            "curve from 100% to 10%.",
-            "Area under that curve (AURC), and the share of the random-to-perfect gap the "
-            "gate captures.",
-            "Rank correlation (Spearman ρ) between the signal and |error|.",
-            "What it refuses: mean size of the meals kept, and the share of 400+ kcal meals "
-            "refused, against the perfect refuser’s.",
-        ]),
-        ("How we test significance", [
-            f"Bootstrap over the {n['n_sessions']} plate sessions, {n['n_boot']:,} resamples, "
-            "recomputing every curve on the same resample: intervals and paired tests.",
-            "Each gate vs refusing at random at each answer rate; Holm correction across the "
-            "ten candidates.",
-            "Ranges: coverage with an interval, width, share within ±100 kcal, coverage by "
-            "difficulty quartile, Winkler interval score.",
-            "Compute: one M-series laptop, ~68 images/s; the whole pipeline reruns in under "
-            "15 minutes.",
-        ]),
+    # the pipeline as boxes
+    boxes = [("a photo", "224 × 224", BG, MUTED),
+             ("frozen backbone", "CLIP ViT-B/16; SigLIP 2,\nDINOv3 as checks", TINT, INK),
+             ("2,304 features", "cached once, per\nphoto and damage level", BG, INK),
+             ("standardise", "mean 0, spread 1,\non the fit split", BG, INK),
+             ("ridge head", "closed form; one for\nkcal, one for grams", TINT, INK),
+             ("“620 kcal”", "and a gate score\n(slide 10)", BG, INK)]
+    bw, gap, bh = 1.62, 0.34, 1.05
+    for i, (head, sub, fill, col) in enumerate(boxes):
+        x = L + i * (bw + gap)
+        rect(s, x, y, bw, bh, fill=fill)
+        t = tb(s, x + 0.08, y + 0.12, bw - 0.16, bh - 0.2)
+        para(t, head, size=12.5, color=col, bold=True, align=PP_ALIGN.CENTER, first=True)
+        para(t, sub, size=9.5, color=MUTED, align=PP_ALIGN.CENTER, line=1.2, space_before=3)
+        if i < len(boxes) - 1:
+            arrow(s, x + bw + 0.07, y + bh / 2 - 0.08, 0.20, 0.16)
+
+    cy = y + bh + 0.40
+    cards = [
+        ("The one tuned knob", "Ridge alpha, chosen on the calibration split over a 25-point "
+                              f"quarter-decade grid. It picked {n['alpha_cal']:,.0f}."),
+        ("Fixed in advance", "PCA k = 64 for the distance gate, B = 32 ensemble "
+                                         "heads, K = 10 neighbours."),
+        ("One results file", "8 damage levels × 507 dishes × 3 backbones = 12,168 rows. "
+                             "Every result is a lookup on that file."),
+        ("Compute", "One M-series laptop, ~68 images/s through the backbone. The whole "
+                    "pipeline reruns in under 15 minutes."),
     ]
-    for x, (title, items) in zip(xs, blocks):
-        rect(s, x - 0.14, y - 0.05, colw + 0.28, 4.25, fill=BG)
-        t = tb(s, x, y + 0.08, colw, 0.35)
-        para(t, title.upper(), size=11, color=ACCENT, bold=True, first=True)
-        t = tb(s, x, y + 0.48, colw, 4.4)
-        for i, it in enumerate(items):
-            para(t, it, size=11, color=INK, line=1.28, first=(i == 0),
-                 space_before=0 if i == 0 else 7)
+    cw_, cg = 2.72, 0.21
+    for i, (title, body) in enumerate(cards):
+        x = L + i * (cw_ + cg)
+        rect(s, x, cy, cw_, 1.55, fill=BG)
+        t = tb(s, x + 0.16, cy + 0.12, cw_ - 0.32, 0.3)
+        para(t, title.upper(), size=10.5, color=ACCENT, bold=True, first=True)
+        t = tb(s, x + 0.16, cy + 0.44, cw_ - 0.32, 1.1)
+        para(t, body, size=11, color=INK, line=1.28, first=True)
 
-    takeaway(s, "Floor and ceiling on every chart: refusing at random, and a refuser that "
-                "knows the true error. A gate is judged by where it sits between them, and by "
-                "what it refuses.", y=6.18, size=13.5)
-    notes(s, "SUSHANT — 45s.\nThree columns, do not read them. Left: features once, ridge "
-             "head, alpha picked on calibration, every other knob fixed in advance. Middle: "
-             "the measures, and say the 90% answer rate out loud, that is the operating "
-             "point. Right: the bootstrap is over sessions, tests are paired, and there is "
-             "a multiple-comparison correction. Then the takeaway line. Hand to Keanu.")
+    takeaway(s, "No training loop, so no convergence curve to show. Nothing was tuned on "
+                "the test split.", y=cy + 1.55 + 0.35, size=14.5)
+    caption(s, L, cy + 1.55 + 0.85, CW,
+            "Leak discipline: heads are fit on the fit dishes; their errors are measured on "
+            "the calibration dishes, which they never saw and which share no session with "
+            "them; the error head is trained on those errors; everything is reported on the "
+            "507 test dishes.", size=11)
+    notes(s, "SUSHANT — 30s.\nLeft to right: the backbone sees each photo once, the "
+             "features are cached, everything after is arithmetic. A ridge head is a linear "
+             "formula with one penalty, alpha, and alpha is the only thing chosen from "
+             "data, on calibration. The other three settings were fixed in advance. One "
+             "laptop, fifteen minutes. Next: how every chart is read.")
+    return s
+
+
+def slide_reader(prs, n):
+    s = base(prs, "How we score a gate", "How to read every chart that follows.", 7)
+    y = s._body_top
+    pic(s, "reader.png", L - 0.10, y + 0.02, 6.2)
+    caption(s, L, y + 3.82, 6.2,
+            "Clean test photos, CLIP [ours]. The protocol is adopted from biometrics [3] and "
+            "selective prediction [6].", size=10.5)
+
+    x2 = 7.75
+    eyebrow(s, x2, y, "A gate is scored on four things", w=4.8)
+    ry = y + 0.36
+    for i, (title, body) in enumerate([
+        ("Error at 90% answered", "MAE on the photos it still answers, at the operating "
+                                  "point. The whole curve is shown too."),
+        ("Area under the curve", "AURC, and the share of the random-to-perfect gap the gate "
+                                 "closes across all answer rates."),
+        ("Rank correlation", "Spearman ρ between the signal and the true error."),
+        ("What it refuses", "Mean size of the meals kept, and the share of 400+ kcal meals "
+                            "refused, against the perfect refuser’s. Ours."),
+    ]):
+        t = tb(s, x2, ry, 4.75, 0.3)
+        para(t, [(f"{i + 1}  ", {"color": ACCENT, "bold": True, "size": 12}),
+                 (title, {"color": INK, "bold": True, "size": 12})], first=True)
+        t = tb(s, x2 + 0.32, ry + 0.28, 4.45, 0.6)
+        para(t, body, size=10.5, color=MUTED, line=1.25, first=True)
+        ry += 0.86
+
+    strip(s, 6.08, 0.80, "Every number carries an interval",
+          f"{n['n_boot']:,} resamples of the {n['n_sessions']} plate sessions, every curve "
+          "recomputed on the same resample, so tests are paired. Each gate is tested "
+          "against refusing at random and Holm-corrected across the ten candidates. A tick "
+          "on a later slide means it survived.", size=11.5)
+    notes(s, "SUSHANT — 35s.\nThis is the one chart to learn. Across: how many photos the "
+             "app still answers. Down: the error on those photos. Refusing at random is "
+             "flat. A perfect refuser, one that knows the true error, falls away. Every "
+             "real gate lands between them, and we read it at 90% answered, one refusal in "
+             "ten. Four measures on the right; the fourth is ours, and slide 12 says why it "
+             "is there. Strip: every number gets an interval from resampling sessions, "
+             "tests are paired, and there is a correction for testing ten gates. Hand to "
+             "Keanu.")
     return s
 
 
 def slide_predictor(prs, n):
     s = base(prs, "Existing results vs ours: the predictor",
-             "The published RGB baseline, reproduced, no training.", 6)
+             "The published baseline, reproduced without training.", 8)
     y = s._body_top
-    pic(s, "backbones.png", L - 0.10, y + 0.02, 6.6)
-    caption(s, L, y + 3.05, 6.5,
+    pic(s, "backbones.png", L - 0.10, y + 0.12, 6.6)
+    caption(s, L, y + 3.15, 6.5,
             f"507 test dishes, official split. CLIP {n['mae']:.1f} kcal {fmt_ci(n['mae_ci'])}: "
-            f"the published 70.6 sits inside the interval. Portion mass {n['mass']:.1f} g "
-            f"({n['mass_rel']:.0f}%). DINOv3 is the only backbone that moves mass.",
-            size=11.5, color=INK, bold=True)
+            f"the published {PUBLISHED_RGB} sits inside the interval. Portion mass "
+            f"{n['mass']:.1f} g ({n['mass_rel']:.0f}%).", size=11.5, color=INK, bold=True)
 
     x2 = 7.85
-    cols, widths = [x2, x2 + 2.55, x2 + 3.55], [2.5, 1.0, 1.3]
-    ry = table_head(s, y, cols, widths, ["Calories, MAE", "kcal", "source"])
-    for i, (what, val, src, hi) in enumerate([
-        ("RGB, Inception v3, trained", "70.6", "[1]", False),
+    cols, widths = [x2, x2 + 2.55, x2 + 3.45], [2.5, 0.9, 1.5]
+    ry = table_head(s, y + 0.10, cols, widths, ["Calories, MAE", "kcal", "source"])
+    for what, val, src, hi in [
+        ("RGB, Inception v3, trained", f"{PUBLISHED_RGB}", "[1]", False),
         ("RGB-D", "47.6", "[1]", False),
-        ("Volume scalar, best", "41.3", "[1]", False),
-        (f"Ours, CLIP, frozen", f"{n['mae']:.1f}", "[ours]", True),
-        (f"Ours, SigLIP 2, frozen", f"{n['mae_siglip']:.1f}", "[ours]", False),
-        (f"Ours, DINOv3, frozen", f"{n['mae_dino']:.1f}", "[ours]", False),
+        ("Volume scalar, best", f"{PUBLISHED_BEST}", "[1]", False),
+        ("Ours, CLIP, frozen", f"{n['mae']:.1f}", "[ours, replicated]", True),
+        ("Ours, SigLIP 2, frozen", f"{n['mae_siglip']:.1f}", "[ours]", False),
+        ("Ours, DINOv3, frozen", f"{n['mae_dino']:.1f}", "[ours]", False),
         ("2026 re-split, 60/15/25", "28.0", "not comparable", False),
-    ]):
+    ]:
         rh = 0.40
         if hi:
-            rect(s, x2 - 0.12, ry - 0.06, 4.75, rh, fill=TINT)
+            rect(s, x2 - 0.12, ry - 0.06, 4.85, rh, fill=TINT)
         t = tb(s, cols[0], ry, widths[0], 0.35)
         para(t, what, size=11.5, color=INK, bold=hi, first=True)
         t = tb(s, cols[1], ry, widths[1], 0.35)
         para(t, val, size=11.5, color=INK, bold=True, first=True)
         t = tb(s, cols[2], ry, widths[2], 0.35)
-        para(t, src, size=10.5, color=ACCENT if src == "[ours]" else MUTED, bold=True,
-             first=True)
+        para(t, src, size=10, color=ACCENT if src.startswith("[ours") else MUTED,
+             bold=True, first=True)
         ry += rh
-    caption(s, x2, ry + 0.08, 4.7,
+    caption(s, x2, ry + 0.08, 4.8,
             "The 28.0 kcal paper re-splits Nutrition5k at random, so near-duplicate scans "
             "land on both sides. We keep [1]’s split and do not compare to it.", size=10.5)
 
-    rect(s, L - 0.18, 6.05, CW + 0.36, 0.80, fill=TINT)
-    t = tb(s, L + 0.14, 6.16, CW - 0.3, 0.7)
-    para(t, [("WHY WE DO NOT CHASE THE NUMBER   ", {"color": ACCENT, "bold": True, "size": 11}),
-             ("a two-stage model that named ingredients and weighed them, with the mass "
-              "error we actually measure (22%) and one name in five wrong, lands at 87 kcal "
-              "[ours, oracle budget]. Worse than the one-step model we already have.",
-              {"color": INK, "size": 11.5})], line=1.3, first=True)
-    notes(s, "KEANU — 40s.\nLeft: three frozen backbones, ridge head, no training, and now "
-             "with whiskers. The published number is inside our interval, so 'we reproduce "
-             "the baseline' is a supported statement, not a point comparison. Right: the "
-             "table separates literature numbers from ours, and names the one we refuse to "
-             "compare to, because it re-split the data. Bottom: why the predictor stays "
-             "frozen. Hand to result 1.")
+    takeaway(s, "Reproduced, so the predictor is frozen. Everything from here is about the "
+                "gate.", y=6.15, size=15)
+    notes(s, "KEANU — 30s.\nThree frozen backbones, a ridge head, no training, with "
+             "whiskers. The published number sits inside our interval: we reproduce the "
+             "baseline, we do not beat it. The table keeps the literature's numbers apart "
+             "from ours and names the one we refuse to compare to, because it re-split the "
+             "data. Then result one.")
     return s
 
 
 def slide_pixel(prs, n):
-    s = base(prs, "Result 1, completed", "Pixel signals do not rank the error. The dish does.", 7)
+    s = base(prs, "Result 1, completed", "Pixel signals see the damage, not the harm.", 9)
     y = s._body_top
     pr = n["per_rung"]
     base_m = pr["clean"]["mass_mae"]
+    rho_px = max(abs(n["rho_pixel"][k]) for k in PIXEL)
 
     eyebrow(s, L, y, "One dish, four photographs  [ours]")
     py = y + 0.32
@@ -468,57 +564,52 @@ def slide_pixel(prs, n):
                   {"color": ACCENT if hi else INK, "size": 11, "bold": True})],
              align=PP_ALIGN.CENTER, space_before=1)
     caption(s, L, py + pw * 0.75 + 0.95, 6.1,
-            "Sharpness scores the cropped photo four times better than the blurred one; it "
-            "carries far more error, because the plate rim is the only clue to portion size. "
-            "The phone rung costs 1.2× on calories and 1.4× on mass.",
+            "Sharpness scores the cropped photo four times better than the blurred one. It "
+            "carries far more error: the plate rim is the only clue to portion size. The "
+            "phone rung is an imitation, and costs 1.2× on calories.",
             size=11.5, color=INK, bold=True)
 
     cx = 7.25
     eyebrow(s, cx, y, "Refuse the worst photos, all 8 damage levels pooled  [ours]")
     pic(s, "risk_coverage.png", cx, y + 0.28, 5.1)
 
-    sy = 5.62
-    rect(s, L - 0.18, sy, CW + 0.36, 1.22, fill=TINT)
-    t = tb(s, L + 0.14, sy + 0.12, CW - 0.3, 1.1)
-    para(t, [("THE DAMAGE IS DETECTED, AND DETECTING IT DOES NOT HELP   ",
-              {"color": ACCENT, "bold": True, "size": 11}),
-             ("sharpness separates damaged photos from clean ones at AUC ≈ 1.00. Yet over "
-              f"{507 * 8:,} dish × damage rows, no pixel metric ranks the error above chance "
-              f"(|ρ| ≤ {max(abs(v) for v in n['rho_pixel'].values()):.2f}). Variance of the "
-              "error: which dish 62%, damage level 9%, their interaction 29%.",
-              {"color": INK, "size": 11.5})], line=1.3, first=True)
-    para(t, "A gate has to read the dish, so the useful signals come from the model, not the "
-            "pixels.", size=12.5, color=INK, bold=True, space_before=6)
-    notes(s, "KEANU — 45s.\nLeft: same dish, four photographs, now including the phone "
-             "imitation. Point at the cropped one: sharp, and the worst of the four. Right: "
-             "on the pooled ladder, sharpness and random sit on top of each other and a "
-             "perfect refuser drops to 38. Bottom strip is the finding: we detect the damage "
-             "almost perfectly and it does not help, because the dish is 62% of the error. "
-             "Hand to Shreya.")
+    strip(s, 5.72, 1.15, "Detected, and it does not help",
+          f"pixel metrics separate damaged photos from clean ones at AUC ≈ 1.00. Over "
+          f"{507 * 8:,} dish × damage rows none is distinguishable from random at any answer "
+          f"rate (|ρ| ≤ {rho_px:.2f}). Variance of the error: which dish 62%, damage level "
+          "9%, their interaction 29%. A gate has to read the dish.", size=11.5)
+    notes(s, "KEANU — 45s.\nLeft: same dish, four photographs. The cropped one is sharp and "
+             "the worst of the four, because the rim is the only clue to portion size; "
+             "sharpness ranks it four times better than the blurred one. Right: refuse the "
+             "photos each signal likes least; sharpness and random sit on top of each other, "
+             "a perfect refuser drops from a hundred to thirty-eight. Strip: we detect the "
+             "damage almost perfectly and it does not help, because damage is nine percent "
+             "of the error and the dish is sixty-two. Hand to Shreya.")
     return s
 
 
 def slide_curve(prs, n):
-    s = base(prs, "Result 2, completed",
-             "Model-aware signals bend the curve, with intervals.", 8)
+    s = base(prs, "Result 2, completed", "Model-aware signals bend the curve.", 10)
     y = s._body_top
-    pic(s, "curves_ci.png", L - 0.10, y + 0.02, 6.55)
-    caption(s, L, y + 3.98, 6.4,
-            "Clean test photos, CLIP. Bands are 95% intervals over plate sessions.", size=10.5)
+    pic(s, "curves_ci.png", L - 0.10, y + 0.02, 6.2)
+    caption(s, L, y + 3.82, 6.2,
+            "Clean test photos, CLIP [ours]. Bands are each curve’s own 95% interval; the "
+            "tests are paired, so differences are tighter than the bands (slide 11).",
+            size=10.5)
 
     x2 = 7.75
     eyebrow(s, x2, y, "At 90% answered, CLIP  [ours]", w=4.8)
     cols, widths = [x2, x2 + 2.35, x2 + 3.30], [2.3, 0.9, 1.4]
     ry = table_head(s, y + 0.34, cols, widths, ["gate", "kcal", "vs random"])
     g, vr = n["g90"], n["vr"]
-    for i, (key, label) in enumerate([
+    for key, label in [
             ("perfect", "perfect refuser"), ("learned_error", "learned error head"),
             ("blend", "blend of four"), ("pred_magnitude", "predicted size (control)"),
             ("ensemble_spread", "ensemble disagreement"), ("mahalanobis", "distance to mean"),
             ("knn_dist", "neighbour distance"), ("random", "random"),
-            ("lap_var", "sharpness")]):
+            ("lap_var", "sharpness")]:
         rh = 0.33
-        hi = key in ("learned_error",)
+        hi = key == "learned_error"
         if hi:
             rect(s, x2 - 0.12, ry - 0.05, 4.75, rh, fill=TINT)
         t = tb(s, cols[0], ry, widths[0], 0.3)
@@ -536,49 +627,47 @@ def slide_curve(prs, n):
         para(t, txt, size=10.5, color=col, bold=bool(key in vr and star), first=True)
         ry += rh
     caption(s, x2, ry + 0.06, 4.75,
-            "✓ = better than random after Holm correction, p < 0.05. Interval is the paired "
-            "difference.", size=10)
+            "✓ = better than random after Holm correction, p < 0.05. The control scores "
+            "risk by the predicted calorie count alone (slide 12).", size=10)
 
-    rect(s, L - 0.18, 6.08, CW + 0.36, 0.82, fill=TINT)
-    t = tb(s, L + 0.14, 6.16, CW - 0.3, 0.75)
     le, es = vr["learned_error"], vr["ensemble_spread"]
     pr = n["pair"]["ensemble_spread - learned_error"]
-    para(t, [("WHAT SURVIVED THE TEST   ", {"color": ACCENT, "bold": True, "size": 11}),
-             (f"the learned error head beats random by {-le['diff']:.0f} kcal at 90% answered "
-              f"(p = {le['p_holm']:.3f}). The proposal’s favourite, ensemble disagreement, does "
-              f"not clear the correction there (p = {es['p_holm']:.2f}) and is "
-              f"{pr['diff']:.0f} kcal behind the error head (paired p = {pr['p']:.3f}). "
-              "Neither distance gate is distinguishable from random on clean photos.",
-              {"color": INK, "size": 11.5})], line=1.3, first=True)
-    notes(s, "SHREYA — 40s.\nLeft: the whole curve, with bands. Random is flat, the perfect "
-             "refuser is the floor, the two learned gates sit between. Right: at 90% "
-             "answered, the numbers and the paired difference to random. Read the strip: "
-             "the learned error head wins, ensemble disagreement, which the proposal "
-             "favoured, does not survive the correction at this operating point. That is "
-             "what the markers asked us to be able to say. Next slide: three backbones.")
+    strip(s, 6.12, 0.78, "What survived",
+          f"the learned error head beats random by {-le['diff']:.0f} kcal at 90% answered "
+          f"({fmt_p(le['p_holm'])}). Ensemble disagreement, the proposal’s favourite, does "
+          f"not clear the correction here ({fmt_p(es['p_holm'])}) and trails the head by "
+          f"{pr['diff']:.0f} kcal. Neither distance gate is distinguishable from random on "
+          "clean photos.", size=11.5)
+    notes(s, "SHREYA — 40s.\nSame axes as slide 7, now with the gates drawn. Random flat, "
+             "perfect refuser the floor, the learned gates between. Table: at 90% answered, "
+             "the error head takes seventy to sixty, ten kcal better than random, interval "
+             "clear of zero, corrected p under one percent. The two proposal claims that "
+             "died: ensemble disagreement does not clear the correction here, and the "
+             "distance gates are not distinguishable from random. On damaged photos they "
+             "are: they detect damage, not difficulty.")
     return s
 
 
 def slide_significance(prs, n):
-    s = base(prs, "Result 2, completed", "The same answer on three backbones.", 9)
+    s = base(prs, "Result 2, completed", "The same answer on three backbones.", 11)
     y = s._body_top
     pic(s, "significance.png", L + 1.05, y + 0.02, 9.4)
 
+    gap, gci = n["gap"], n["gap_ci"]
     sy = 5.68
     x = L
     for title, body in [
-        ("What is significant",
-         "The learned error head, the blend and the control beat random on all three "
-         "backbones (Holm p < 0.01). The head and the blend are identical: blending adds "
-         "nothing."),
-        ("What is not",
-         "Ensemble disagreement clears the test at 50% answered, not at 90%. The two distance "
-         "gates never do. No pixel metric ever does; sharpness is worse than random at 50%."),
+        ("Beat random, all three",
+         "The learned error head, the blend and the control (Holm p < 0.01). Head and blend "
+         "are identical: blending adds nothing."),
+        ("Do not",
+         "Ensemble disagreement at 90% (it does at 50%). The distance gates, never. The "
+         "pixel gates, never; sharpness is worse than random at 50% on two of three."),
         ("Share of the gap captured",
-         f"Learned error head {100 * n['gap']['learned_error']:.0f}% "
-         f"{fmt_ci([100 * v for v in n['gap_ci']['learned_error']])}, ensemble "
-         f"{100 * n['gap']['ensemble_spread']:.0f}%, distance to mean "
-         f"{100 * n['gap']['mahalanobis']:.0f}% with an interval spanning zero."),
+         f"Error head {100 * gap['learned_error']:.0f}% "
+         f"{fmt_ci([100 * v for v in gci['learned_error']])}; control "
+         f"{100 * gap['pred_magnitude']:.0f}%; ensemble {100 * gap['ensemble_spread']:.0f}%; "
+         f"distance to mean {100 * gap['mahalanobis']:.0f}%, interval spanning zero."),
     ]:
         rect(s, x - 0.12, sy - 0.04, 3.72, 1.22, fill=BG)
         t = tb(s, x, sy + 0.04, 3.5, 0.3)
@@ -586,70 +675,68 @@ def slide_significance(prs, n):
         t = tb(s, x, sy + 0.33, 3.5, 0.9)
         para(t, body, size=10.5, color=INK, line=1.22, first=True)
         x += 3.95
-    notes(s, "SHREYA — 40s.\nOne panel per backbone, same rows. Filled dots are gates that "
-             "beat random after correction. The pattern is the same three times: the learned "
-             "gates and the control do, ensemble disagreement does not at this operating "
-             "point, distance gates and pixel gates never. The gap share says how much of "
-             "the room between random and perfect each captures: about half for the error "
-             "head. Next: what they refuse, because the control being on this list should "
-             "worry you.")
+    notes(s, "SHREYA — 30s.\nOne panel per backbone. Each dot is a gate's paired difference "
+             "to random at 90%, with its interval; filled means it survived the correction. "
+             "The pattern repeats three times: the error head, the blend and the control "
+             "are filled; ensemble disagreement, the distance gates and the pixel gates are "
+             "hollow. The control being filled is the point of the next slide.")
     return s
 
 
 def slide_degeneracy(prs, n):
-    s = base(prs, "Result 3, completed", "Check what each gate refuses before believing it.", 10)
+    s = base(prs, "Result 3, completed", "Check what each gate refuses before believing it.", 12)
     y = s._body_top
     pic(s, "degeneracy.png", L + 1.15, y + 0.02, 9.2)
     sel = n["sel"]
-    rect(s, L - 0.18, 5.50, CW + 0.36, 1.40, fill=TINT)
-    t = tb(s, L + 0.14, 5.58, CW - 0.3, 1.3)
-    para(t, [("THE CONTROL   ", {"color": ACCENT, "bold": True, "size": 11}),
-             ("error grows with portion size, so refusing big meals lowers the error without "
-              "reading the photo. Scoring risk by the predicted calorie count alone does "
-              "exactly that.", {"color": INK, "size": 11})], line=1.25, first=True)
-    para(t, f"At 90% answered every learned gate keeps meals the size a perfect refuser keeps "
-            f"(error head {sel['learned_error']['0.9']['kept_mean_kcal']:.0f} kcal, perfect "
-            f"{sel['perfect']['0.9']['kept_mean_kcal']:.0f}). At 50% the control keeps "
-            f"{sel['pred_magnitude']['0.5']['kept_mean_kcal']:.0f}-kcal meals and the error "
-            f"head {sel['learned_error']['0.5']['kept_mean_kcal']:.0f}, against "
-            f"{sel['perfect']['0.5']['kept_mean_kcal']:.0f} for a perfect refuser. Only "
-            f"ensemble disagreement stays with the oracle ({sel['ensemble_spread']['0.5']['kept_mean_kcal']:.0f}).",
-         size=11, color=INK, line=1.25, space_before=3)
-    para(t, "So the honest gate depends on the answer rate. We report the kept-set size "
-            "beside every error, at every operating point.",
-         size=11.5, color=INK, bold=True, space_before=3)
-    notes(s, "SHREYA — 35s.\nLeft panel is the operating point we report: at 90% every "
-             "learned gate keeps normal-sized meals, so the error head’s win is honest "
-             "there. Right panel is 50%: the control and the error head drift to small "
-             "meals, ensemble disagreement stays with the oracle. That is why the proposal "
-             "liked it, and why we now say which gate is honest at which answer rate. Hand "
-             "to Kevin.")
+    pc = n["pair"]["learned_error - pred_magnitude"]
+    k = lambda g, c: sel[g][c]["kept_mean_kcal"]
+    t = strip(s, 5.55, 1.35, "The control",
+          "scoring risk by the predicted calorie count refuses big meals and nothing else, "
+          "and error grows with size, so that alone lowers the error. At 90% the error head, "
+          f"the control and the oracle keep the same meals ({k('learned_error', '0.9'):.0f} / "
+          f"{k('pred_magnitude', '0.9'):.0f} / {k('perfect', '0.9'):.0f} kcal): the head’s "
+          f"win is honest, and the head and the control are statistically tied (paired "
+          f"p = {pc['p']:.2f}). At 50% the head drifts to {k('learned_error', '0.5'):.0f}-kcal "
+          f"meals and the control to {k('pred_magnitude', '0.5'):.0f}; only ensemble "
+          f"disagreement stays with the oracle ({k('ensemble_spread', '0.5'):.0f} vs "
+          f"{k('perfect', '0.5'):.0f}).", size=11)
+    para(t, "Which gate is honest depends on the answer rate. The kept-set size sits beside "
+            "every error we report.", size=12, color=INK, bold=True, space_before=4)
+    notes(s, "SHREYA — 35s.\nAcross: the average size of the meals a gate still answers. "
+             "Down: its error. The dashed line is the perfect refuser. Left panel, refuse one "
+             "in ten: the error head, the control and the oracle all keep meals around 220 "
+             "kcal, so the head's win is honest, and it is tied with simply reading the "
+             "predicted size. That is not a scandal: at this point the oracle refuses big "
+             "meals too, because the biggest errors are on the biggest meals. Right panel, "
+             "refuse half: the head and the control drift to small meals; only ensemble "
+             "disagreement stays with the oracle. Which gate is honest depends on the answer "
+             "rate. Hand to Kevin.")
     return s
 
 
 def slide_ranges(prs, n):
-    s = base(prs, "Result 4, first cut", "Ranges: honest on average, not on the hard dishes.", 11)
+    s = base(prs, "Result 4, first cut", "Ranges: honest on average, not on large meals.", 13)
     y = s._body_top
     c = n["conf"]
     plain, adapt = c["constant"], c["ensemble_spread"]
-    pic(s, "conformal.png", L - 0.15, y + 0.02, 7.6)
+    pic(s, "conformal_kcal.png", L - 0.15, y + 0.02, 7.6)
     caption(s, L, y + 2.98, 7.4,
-            f"Split conformal, 90% target, {n['n_calib']} calibration dishes, 507 clean test "
-            f"photos, CLIP [ours].", size=10.5)
+            f"Split conformal [5], 90% target, {n['n_calib']} calibration dishes, 507 clean "
+            f"test photos, CLIP [ours].", size=10.5)
 
     x2 = 8.85
     cols, widths = [x2, x2 + 1.85, x2 + 2.75], [1.8, 0.9, 0.9]
     ry = table_head(s, y, cols, widths, ["", "plain", "adaptive"])
     for lab, a, b in [
         ("coverage", f"{100 * plain['coverage']:.1f}%", f"{100 * adapt['coverage']:.1f}%"),
-        ("median half-width", f"±{plain['width_median'] / 2:.0f} kcal",
-         f"±{adapt['width_median'] / 2:.0f} kcal"),
         ("interval", fmt_ci([100 * v for v in plain["coverage_ci"]]),
          fmt_ci([100 * v for v in adapt["coverage_ci"]])),
-        ("hardest quarter", f"{100 * plain['by_difficulty']['coverage'][3]:.0f}%",
-         f"{100 * adapt['by_difficulty']['coverage'][3]:.0f}%"),
+        ("median half-width", f"±{plain['width_median'] / 2:.0f} kcal",
+         f"±{adapt['width_median'] / 2:.0f} kcal"),
         ("largest meals", f"{100 * plain['by_kcal']['coverage'][3]:.0f}%",
          f"{100 * adapt['by_kcal']['coverage'][3]:.0f}%"),
+        ("hardest quarter", f"{100 * plain['by_difficulty']['coverage'][3]:.0f}%",
+         f"{100 * adapt['by_difficulty']['coverage'][3]:.0f}%"),
         ("within ±100 kcal", f"{100 * plain['usable_share']:.0f}%",
          f"{100 * adapt['usable_share']:.0f}%"),
         ("interval score", f"{plain['interval_score']:.0f}", f"{adapt['interval_score']:.0f}"),
@@ -664,67 +751,60 @@ def slide_ranges(prs, n):
     caption(s, x2, ry + 0.04, 3.6, "Interval score: width plus a penalty for misses; lower "
                                    "is better.", size=9.5)
 
-    mix = n["mix"]
-    sy = 5.08
-    rect(s, L - 0.18, sy, CW + 0.36, 1.74, fill=TINT)
-    t = tb(s, L + 0.14, sy + 0.09, CW - 0.3, 1.6)
-    para(t, [("THREE THINGS THIS TELLS US   ", {"color": ACCENT, "bold": True, "size": 11}),
-             ("(1) Marginal coverage hides a lot: the plain range reads 90% overall and covers "
-              f"the hardest quarter of dishes {100 * plain['by_difficulty']['coverage'][3]:.0f}% "
-              "of the time. Letting the gate signal set the width closes most of that gap on "
-              "all three backbones and improves the proper score.",
-              {"color": INK, "size": 11})], line=1.25, first=True)
-    para(t, f"(2) Neither range covers the largest quarter of meals at 90% (about "
-            f"{100 * plain['by_kcal']['coverage'][3]:.0f}%). That is the problem O3 has to "
-            "solve next, and it is the same big-meal effect as slide 10.",
-         size=11, color=INK, line=1.25, space_before=3)
-    mc = mix["uniform"]["constant"]
-    para(t, f"(3) Exchangeability is real: calibrate on clean photos and deploy on a damaged "
-            f"mixture and coverage drops to "
-            f"{100 * mc['calibrated_on_clean']['coverage']:.0f}%; calibrating on the same "
-            f"mixture restores {100 * mc['calibrated_on_mixture']['coverage']:.0f}% at "
+    mc = n["mix"]["uniform"]["constant"]
+    bk = plain["by_kcal"]["coverage"]
+    t = strip(s, 5.35, 1.50, "Two things this tells us",
+              f"(1) The 90% average is {100 * bk[0]:.0f}% on the smaller meals and "
+              f"{100 * bk[3]:.0f}% on the largest quarter; the adaptive width barely grows "
+              "with size. Same big-meal effect as slide 12, and the next O3 problem.",
+              size=11)
+    para(t, f"(2) By difficulty, the adaptive width lifts the hardest quarter from "
+            f"{100 * plain['by_difficulty']['coverage'][3]:.0f}% to "
+            f"{100 * adapt['by_difficulty']['coverage'][3]:.0f}% and improves the proper "
+            f"score. Shift check: calibrate on clean, deploy on damaged, coverage "
+            f"{100 * mc['calibrated_on_clean']['coverage']:.0f}%; recalibrate, "
+            f"{100 * mc['calibrated_on_mixture']['coverage']:.0f}% at "
             f"{mc['calibrated_on_mixture']['width_mean'] / mc['calibrated_on_clean']['width_mean'] * 100 - 100:.0f}% "
-            "more width. A check, not a finding.",
-         size=11, color=INK, line=1.25, space_before=3)
-    notes(s, "KEVIN — 45s.\nThis is O3’s first measurement, three weeks early. Left chart: "
-             "coverage by how hard the dish looks. Plain conformal gives every photo the same "
-             "range and reads 90% overall, but it over-covers easy dishes and under-covers "
-             "hard ones. Let the gate signal set the width and the hard quarter improves. "
-             "Right table: the numbers, including the one that worries us: the largest meals "
-             "are under-covered by both. That is next. Then the exchangeability check in one "
-             "sentence.")
+            "more width. A check, not a finding.", size=11, color=INK, line=1.3,
+         space_before=3)
+    notes(s, "KEVIN — 40s.\nA range is a promise: the truth is inside it nine times in "
+             "ten. Split conformal keeps that promise on average, 89.5 percent. Left chart: "
+             "cut by meal size, the promise is 98 percent on small meals and 67 on the "
+             "largest quarter. The average is made of two wrong numbers. Right chart: cut "
+             "by how hard the dish looks, letting the gate signal set the width lifts the "
+             "hardest quarter from 80 to 85. Table: the numbers. The shift check in one "
+             "sentence, and it is a check, not a finding.")
     return s
 
 
 def slide_timeline(prs, n):
-    s = base(prs, "Challenges, timeline, roles", "Two milestones slipped, one moved early.", 12)
+    s = base(prs, "Challenges, timeline, roles", "Two milestones slipped, one moved early.", 14)
     y = s._body_top
 
-    eyebrow(s, L, y, "Challenges and what we did", w=5.5)
-    ry = y + 0.32
+    eyebrow(s, L, y, "Two challenges, and what we did", w=5.5)
+    ry = y + 0.34
     for what, did in [
         ("Correlated test dishes",
-         "Errors cluster by plate session (ICC 0.34). Unit of resampling is now the session; "
-         "the calibration carve respects it."),
+         "Errors cluster by plate session (ICC 0.34). The session is now the unit of "
+         "resampling, and the calibration carve respects it."),
         ("A gate that cheats",
-         "Refusing big meals looks like skill. A control gate exposed it; kept-set size is "
-         "reported at every operating point."),
-        ("Rank-deficient covariance",
-         "2,304 dims on 1,924 dishes. Mahalanobis on the leading 64 components, fixed in "
-         "advance."),
-        ("No phone photos in the data",
-         "The phone rung is an imitation of four mild effects, and is labelled as one."),
+         "Refusing big meals looks like skill. A control gate exposed it; the kept-set size "
+         "is reported beside every error, at every answer rate."),
     ]:
         t = tb(s, L, ry, 5.3, 0.3)
-        para(t, what, size=11.5, color=INK, bold=True, first=True)
-        t = tb(s, L, ry + 0.27, 5.3, 0.6)
-        para(t, did, size=10.5, color=MUTED, line=1.25, first=True)
-        ry += 0.86
+        para(t, what, size=12, color=INK, bold=True, first=True)
+        t = tb(s, L, ry + 0.30, 5.3, 0.8)
+        para(t, did, size=11, color=MUTED, line=1.28, first=True)
+        ry += 1.15
+    caption(s, L, ry + 0.05, 5.3,
+            "Also: a rank-deficient covariance (2,304 dims on 1,924 dishes; Mahalanobis on "
+            "64 components, fixed in advance), and no phone photos in the data (the phone "
+            "rung is an imitation, labelled as one).", size=10)
 
     x2 = 6.85
     eyebrow(s, x2, y, "Proposal timeline vs actual", w=5.5)
     cols, widths = [x2, x2 + 1.35, x2 + 4.15], [1.3, 2.75, 1.5]
-    ty = table_head(s, y + 0.32, cols, widths, ["planned", "milestone", "status"])
+    ty = table_head(s, y + 0.34, cols, widths, ["planned", "milestone", "status"])
     for when, what, status, col in [
         ("17 Aug", "Pipeline, 3 backbones, first results", "done", GREEN),
         ("25 Aug", "Phone rung; hidden-food rung", "late · dropped", ACCENT),
@@ -742,11 +822,11 @@ def slide_timeline(prs, n):
         para(t, status, size=10.5, color=col, bold=True, first=True)
         ty += rh
     caption(s, x2, ty + 0.02, 5.6,
-            "Next: size-aware ranges for large meals (CQR); the deployment mixture on all "
-            "backbones; the cost tier (test-time augmentation, a second backbone); report.",
-            size=10.5, color=INK, bold=True)
+            "Next: size-aware ranges for large meals (conformalised quantile regression, "
+            "CQR); the deployment mixture on all backbones; the cost tier (test-time "
+            "augmentation, a second backbone); the report.", size=10.5, color=INK, bold=True)
 
-    ry = 5.55
+    ry = 5.65
     eyebrow(s, L, ry, "Who owns what")
     ry += 0.32
     for i, (who, what) in enumerate([
@@ -756,51 +836,60 @@ def slide_timeline(prs, n):
         t = tb(s, L + i * 2.32, ry, 2.25, 0.5)
         para(t, who, size=12, color=INK, bold=True, first=True)
         para(t, what, size=10, color=MUTED, space_before=2, line=1.25)
-    notes(s, "KEVIN — 40s.\nLeft: four challenges, one line each, the first is the one to "
-             "say in full. Right: the proposal timeline with honest statuses: two late, one "
-             "dropped with a reason, one early. Then the next steps line. Bottom: the roles. "
-             "State each member’s contribution in one clause each when you name them.")
+    notes(s, "KEVIN — 25s.\nTwo challenges, the first in full: test dishes are correlated "
+             "within a session, so we changed the unit of analysis. Timeline: first "
+             "milestone on time, two slipped by three weeks, one dropped with a reason, "
+             "the ranges early. Next steps in one breath. Roles as on the proposal; name "
+             "each member and one thing they did.")
     return s
 
 
 def slide_conclusions(prs, n):
-    s = base(prs, "Conclusions", "What we know now, and did not at the proposal.", 13)
+    s = base(prs, "Conclusions", "What we know now that we did not in August.", 15)
     y = s._body_top
     le = n["vr"]["learned_error"]
     for i, (head, body) in enumerate([
         ("Photo quality is not the axis.",
-         "Damage is detected almost perfectly and explains 9% of the error. The dish explains "
-         "62%. Cheap pixel gates never beat random, on any backbone, at any answer rate."),
-        ("Model-aware gates work, and we can now say how sure we are.",
+         "Damage is detected almost perfectly and explains 9% of the error; the dish "
+         "explains 62%. No pixel gate beats random, on any backbone, at any answer rate."),
+        ("A free model-aware signal works, with intervals.",
          f"At 90% answered the learned error head cuts the error by {-le['diff']:.0f} kcal "
-         f"against random (Holm p = {le['p_holm']:.3f}) on three backbones, keeps normal-sized "
-         "meals, and captures about half the gap to a perfect refuser."),
+         f"against random ({fmt_p(le['p_holm'])}) on three backbones and keeps normal-sized "
+         "meals. So does reading the predicted size; the two are tied there."),
         ("Which gate is honest depends on the answer rate.",
-         "At 50% the same gate drifts to small meals and ensemble disagreement is the one that "
-         "tracks the oracle. A control gate and the kept-set size are part of every result."),
-        ("Ranges are honest on average and not yet on hard or large dishes.",
-         "Adaptive width fixes most of the difficulty gap. The largest meals are still "
-         "under-covered. That is O3’s job by 11 October."),
+         "At 50% the same gate drifts to small meals and ensemble disagreement is the one "
+         "that tracks the oracle. The kept-set size sits beside every error we report."),
+        ("Ranges are honest on average, not on large meals.",
+         "Adaptive width fixes most of the difficulty gap. The largest quarter of meals is "
+         "covered 67% of the time. That is O3’s job by 11 October."),
     ]):
-        rect(s, L - 0.18, y - 0.04, CW + 0.36, 0.98, fill=BG if i % 2 == 0 else None)
-        t = tb(s, L, y + 0.04, 0.5, 0.5)
+        rect(s, L - 0.18, y - 0.04, CW + 0.36, 0.90, fill=BG if i % 2 == 0 else None)
+        t = tb(s, L, y + 0.02, 0.5, 0.5)
         para(t, str(i + 1), size=18, color=ACCENT, bold=True, first=True)
-        t = tb(s, L + 0.55, y + 0.02, CW - 0.6, 0.9)
+        t = tb(s, L + 0.55, y + 0.02, CW - 0.6, 0.85)
         para(t, head, size=13.5, color=INK, bold=True, first=True)
-        para(t, body, size=11.5, color=MUTED, line=1.3, space_before=3)
-        y += 1.06
-    takeaway(s, "Headline question, answered so far: an app can know when it is guessing, "
-                "from a signal that costs no extra inference, at the cost of refusing one "
-                "photo in ten.", y=6.12, size=13.5)
-    notes(s, "KEVIN — 20s.\nFour sentences, read the bold lines only. Then the headline. "
-             "Hand back for questions. Owners for Q&A: framing and data Nisarg, splits and "
-             "metrics Sushant, predictor and pixel result Keanu, gates and significance "
-             "Shreya, ranges and timeline Kevin.")
+        para(t, body, size=11, color=MUTED, line=1.28, space_before=2)
+        y += 0.97
+    t = tb(s, L, y + 0.10, CW, 1.2)
+    para(t, "So far: an app can tell when it is guessing, at the price of refusing one photo "
+            "in ten, for about half of what a perfect refuser would give. On the phone: the "
+            "signals that need no model all fail; the ones that work are a linear head on "
+            "features the app already computes.", size=13, color=INK, bold=True, line=1.3,
+         first=True)
+    para(t, "Every method here is borrowed and cited. The benchmark, the control, the "
+            "sessions and the findings are ours.", size=11.5, color=MUTED, line=1.3,
+         space_before=6)
+    notes(s, "KEVIN — 30s.\nRead the four bold lines. Then the answer so far, including "
+             "the phone: the cheap signals fail, the working ones are free if the model is "
+             "on the device. Last line: everything is borrowed except the benchmark and what "
+             "it found. Questions. Owners: framing Nisarg, splits and metrics Sushant, "
+             "predictor and pixel result Keanu, gates and significance Shreya, ranges and "
+             "timeline Kevin.")
     return s
 
 
 def slide_references(prs, n):
-    s = base(prs, "Closing", "Sources, AI use, and where the code is.", 14)
+    s = base(prs, "Closing", "Sources, AI use, and where the code is.", 16)
     y = s._body_top
     refs = [
         "[1] Q. Thames, A. Karpur, W. Norris, F. Xia, L. Panait, T. Weyand, and J. Sim, “Nutrition5k: "
@@ -817,26 +906,29 @@ def slide_references(prs, n):
         "distribution-free uncertainty quantification,” arXiv:2107.07511, 2021.",
         "[6] Y. Geifman and R. El-Yaniv, “SelectiveNet: A deep neural network with an integrated "
         "reject option,” in Proc. ICML, PMLR 97, 2019.",
-        "Re-split comparison on slide 6: V. Awasthi et al., Int. J. Intell. Eng. Syst., vol. 19, "
+        "Re-split comparison on slide 8: V. Awasthi et al., Int. J. Intell. Eng. Syst., vol. 19, "
         "no. 2, 2026, doi:10.22266/ijies2026.0228.08.",
-        "All figures and tables are ours unless tagged [1]. Images on slides 4 and 7 are Nutrition5k "
+        "The gate signals (feature-space distance, nearest-neighbour distance, ensemble "
+        "disagreement, learned error), the normalised conformal score, the interval score and "
+        "the Holm correction are used as published; full references in the report.",
+        "All figures and tables are ours unless tagged [1]. Images on slides 5 and 9 are Nutrition5k "
         "dishes [1], reproduced under the dataset licence.",
     ]
-    t = tb(s, L, y, CW, 3.6)
+    t = tb(s, L, y, CW, 3.8)
     for i, r in enumerate(refs):
-        para(t, r, size=10, color=INK if i < 6 else MUTED, line=1.25, first=(i == 0),
+        para(t, r, size=9.5, color=INK if i < 6 else MUTED, line=1.25, first=(i == 0),
              space_before=0 if i == 0 else 4)
 
-    ry = 5.05
-    rect(s, L - 0.18, ry, CW + 0.36, 0.78, fill=BG)
-    t = tb(s, L + 0.14, ry + 0.10, CW - 0.3, 0.7)
+    ry = 5.25
+    rect(s, L - 0.18, ry, CW + 0.36, 0.72, fill=BG)
+    t = tb(s, L + 0.14, ry + 0.09, CW - 0.3, 0.65)
     para(t, [("GENERATIVE AI USE   ", {"color": ACCENT, "bold": True, "size": 10.5}),
              ("Claude Code (Anthropic) was used to scaffold pipeline code, generate the slides "
               "from the results files, and improve wording. The experimental design, analysis "
               "choices, results and conclusions are the group’s own and reproduce from the "
               "repository.", {"color": INK, "size": 10.5})], line=1.3, first=True)
-    rect(s, L - 0.18, ry + 0.92, CW + 0.36, 0.62, fill=TINT)
-    t = tb(s, L + 0.14, ry + 1.05, CW - 0.3, 0.5)
+    rect(s, L - 0.18, ry + 0.84, CW + 0.36, 0.60, fill=TINT)
+    t = tb(s, L + 0.14, ry + 0.96, CW - 0.3, 0.5)
     para(t, [("CODE AND RESULTS   ", {"color": ACCENT, "bold": True, "size": 10.5}),
              (REPO_URL, {"color": INK, "bold": True, "size": 12}),
              ("   ·   every number in this deck is regenerated from results/*.json by the "
@@ -853,10 +945,10 @@ def main() -> None:
     n = load_numbers()
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(W), Inches(H)
-    for fn in (slide_title, slide_recap, slide_changes, slide_dataset, slide_design,
-               slide_predictor, slide_pixel, slide_curve, slide_significance,
-               slide_degeneracy, slide_ranges, slide_timeline, slide_conclusions,
-               slide_references):
+    for fn in (slide_title, slide_recap, slide_why, slide_changes, slide_dataset,
+               slide_design, slide_reader, slide_predictor, slide_pixel, slide_curve,
+               slide_significance, slide_degeneracy, slide_ranges, slide_timeline,
+               slide_conclusions, slide_references):
         fn(prs, n) if fn is not slide_title else fn(prs)
     prs.save(OUT)
     total = sum(sec for _, sec, _ in SLIDE_PLAN)
