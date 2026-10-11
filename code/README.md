@@ -2,6 +2,11 @@
 
 Everything is inference-only and runs on an M-series MacBook. No training, no GPU cluster.
 
+**To replicate every result in the final presentation, run `bash reproduce.sh` from the
+repository root** (~100 min including downloads and feature extraction; `--fast` skips those
+once `data/cache/` exists, ~70 min). It runs the scripts below in order and writes
+`results/*.json` and `results/figures/`.
+
 ## One-time setup
 
 ```bash
@@ -45,14 +50,29 @@ oracle_ladder.py the ceiling analysis (metadata only, reads no images)
 gate_bench.py  predictor + pixel metrics per (dish, rung) -> results/predictions.csv
 gate_probe.py  every gate on one protocol, three backbones, cluster bootstrap, paired
                tests, pairwise tests -> results/gate_probe.json, results/gate_scores.csv
-conformal.py   split conformal ranges, plain and adaptive width -> results/conformal.json
+replicate.py   the confirmation run (9 Oct): the same benchmark on the 367 train sessions,
+               cross-fitted by session, with hypotheses fixed beforehand; and the
+               training-variance check (20 calibration carves scored on test)
+               -> results/replication.json, results/train_pixel.csv
+robustness.py  the follow-ups (11 Oct): one pooled headline over all 3,262 dishes (five
+               repeats of cross-fitting, averaged), the result at every answer rate and
+               with 5/10/20 size bands, placebo error heads, two stabilised error heads
+               (bagged, trained on 3x the errors), disagreement across backbones, and the
+               ranges re-checked over 20 carves and on new sessions -> results/robustness.json
+conformal.py   split conformal ranges: plain, gate-scaled and size-aware widths (CQR,
+               per-size-quartile), and ranges calibrated on answered photos only
+               -> results/conformal.json
 error_sources.py  where the error comes from, and which part of it is gateable
 figures.py     every deck figure -> results/figures/
 build_deck.py  the proposal deck (Aug 2026) -> 01_Proposal_v6.pptx
 build_update_deck.py  the update deck (Sep 2026) -> 01_MethodResults.pptx
 build_update_deck_v2.py  the size-controlled update deck (20 Sep) -> 01_MethodResults_v2.pptx
 build_update_deck_v3.py  the same argument in plain sentences, notes read from the v3 script
-                         -> 01_MethodResults_v3.pptx   (the deck to submit)
+build_update_deck_v4.py  v3 after a critical read: corrected scopes, gate citations [7]-[12],
+                         table rules spanning the table, notes read from the v4 script
+                         -> 01_MethodResults_v4.pptx   (the update deck as submitted)
+build_final_deck.py  the final presentation (19 Oct) -> 01_FinalResults.pptx; every
+                     number read from results/*.json
 md2pdf.py, wordcount.py  talk-script tooling
 ```
 
@@ -64,16 +84,41 @@ the deck builders refuse to run if the figures are missing.
 cd code
 ../.venv/bin/python gate_bench.py               # ~4.5 min: heads, errors, pixel metrics
 ../.venv/bin/python gate_probe.py --all --json  # ~2 min: every gate, 4 blocks, 2,000 resamples
-../.venv/bin/python conformal.py --all --json   # ~25 s
+../.venv/bin/python replicate.py --all --json   # ~35 min: fresh-session replication + 20 carves
+../.venv/bin/python robustness.py --json        # ~25 min: pooled headline and robustness checks
+../.venv/bin/python conformal.py --all --json   # ~2 min
 ../.venv/bin/python error_sources.py            # ~2 s
 ../.venv/bin/python figures.py                  # ~30 s
-../.venv/bin/python build_update_deck_v3.py     # ~2 s (v2 and v1 builders still run)
+../.venv/bin/python build_update_deck_v4.py     # ~2 s (v1-v3 builders still run)
 ```
 
 **Standardise the features before the ridge.** The 2,304 dims are `[CLS | patch-mean |
 patch-std]` and differ in scale by orders of magnitude, so an unstandardised penalty is
 arbitrary across blocks. Z-scoring on the fit split is what reproduces 73.4 kcal / 44.1 g;
 without it the identical code gives 78.3 / 46.8.
+
+## What is ours and what is taken from others
+
+Every file in `code/` was written for this project; no code was copied from online
+repositories. Claude Code (Anthropic) assisted with writing it, under the group's direction
+(see the GenAI statement in the top-level README). What the code *uses* from others:
+
+| Taken from others, used as published | Where |
+|---|---|
+| Nutrition5k images, metadata and official train/test split, Thames et al., CVPR 2021 | `n5k.py`, `fetch_images.py` |
+| Pretrained backbones through `timm`: CLIP ViT-B/16 (OpenAI weights), SigLIP 2 ViT-B/16, DINOv3 ViT-B/16; frozen, never fine-tuned | `features.py` |
+| Libraries: numpy, Pillow, timm/PyTorch, scikit-learn (`QuantileRegressor` only), matplotlib, python-pptx | throughout |
+| Standard methods, implemented here from their papers: ridge regression (closed form); Mahalanobis distance (Lee et al. 2018); k-nearest-neighbour distance (Sun et al. 2022); ensemble disagreement (Lakshminarayanan et al. 2017, here bootstrap ridge heads); learned error predictor (Corbière et al. 2019); risk–coverage curve and AURC (El-Yaniv & Wiener 2010; Geifman et al. 2019); error-versus-reject protocol (Grother & Tabassi 2007); corruption families × severities (Hendrycks & Dietterich 2019); Laplacian variance, Tenengrad-style gradient energy, blockiness and a high-frequency ratio as no-model sharpness metrics; split conformal prediction and normalised scores (Papadopoulos et al. 2011); conformalised quantile regression (Romano et al. 2019); Holm's step-down correction; the cluster bootstrap | `gate_probe.py`, `quality.py`, `conformal.py`, `degrade.py` |
+
+| Ours | Where |
+|---|---|
+| The ragged-metadata parser, the usable-split restriction, plate-session detection (600 s gap) and the session-level fit/calibration carve | `n5k.py` |
+| The damage ladder's rungs and the `phone` imitation | `degrade.py` |
+| The gate benchmark protocol: ten gates on one curve, the analytic random reference, the predicted-size control, scoring inside predicted-size bands, the relative-error check, paired session-bootstrap tests | `gate_probe.py` |
+| The confirmation run (cross-fitting by session on train, fixed hypotheses), the training-variance check, the pooled repeated cross-fit, placebo heads, the bagged and out-of-fold error heads, disagreement across backbones | `replicate.py`, `robustness.py` |
+| The oracle error budget and the error-variance decomposition | `oracle_ladder.py`, `error_sources.py` |
+| The gate score as range width, size-aware ranges compared by true meal size, ranges calibrated on answered photos | `conformal.py` |
+| Every figure and slide builder | `figures.py`, `build_*.py` |
 
 ## Splits
 
@@ -134,7 +179,11 @@ therefore writes two further blocks per backbone:
   −1.0 / +0.4 / −0.4 kcal at 90% (CLIP / SigLIP 2 / DINOv3), which validates the design;
   the learned head keeps −6.5 / −6.5 / −4.7 (Holm p < 0.01 on all three, ahead of the
   control at paired p ≤ 0.02); the perfect refuser keeps −14.5 / −14.9 / −12.9 of its
-  −20.4 / −19.9 / −17.9. About half the head's win, and a third of the ceiling, was size.
+  −20.4 / −19.9 / −17.9. On this one carve about half the head's win looked like size.
+  **Superseded 9–11 Oct:** that carve (seed 760) was the most favourable of 20 for the head
+  on two backbones. `replicate.py` and `robustness.py` refit everything over 20 carves, on
+  the 367 train sessions and pooled over all 3,262 dishes; the pooled head is −1.4 / −1.8 /
+  −2.1 inside bands, about a tenth of a perfect refuser. Quote those (see `README.md`).
 - `clean_rel`: the same gates on relative error `|err| / max(true, 50)`. This loss has the
   opposite bias (its oracle refuses 0% of 400+ kcal meals and 27% of sub-100 kcal ones; 83
   test dishes are under 50 kcal), so it is a secondary check: at 90% no gate beats random,
@@ -230,9 +279,12 @@ the adversarial stress test needs.
 | **identity + total mass** | **29.5** | **32.7** |
 | identity + exact grams | 3.0 | 4.2 |
 
-The headline survives the restriction: 32.7 still beats the best published result on
-this dataset (41.3, Thames et al. CVPR 2021). Identity alone and mass alone remain
-nearly useless separately — the information is complementary, not additive.
+Read this as an error budget, not as headroom. Nutrition5k's calorie labels are the
+arithmetic sum of the ingredient rows, so the bottom rungs invert the label formula rather
+than measure perception; with our measured mass error (22%) and an assumed one ingredient
+name in five wrong the same oracle lands at 87.4 kcal, worse than the 70.9
+end-to-end predictor (`perturbed_o3` block). Identity alone and mass alone remain nearly
+useless separately — the information is complementary, not additive.
 
 **Use 32.7 / n=507 in the report**, not 29.5 / n=707. The n=707 figure is computed over
 dishes we cannot actually run a model on.
