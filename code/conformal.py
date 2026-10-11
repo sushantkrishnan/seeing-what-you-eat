@@ -41,10 +41,24 @@ import json
 import numpy as np
 
 import n5k
-from gate_bench import MODEL, RESULTS, RUNGS, ridge_predict
+from gate_bench import MODEL, RESULTS, RUNGS, ridge_fit, ridge_predict
 from gate_probe import BACKBONES, BIG_DISH_KCAL, SEED, fit_gates
 
 WIDTH_MODELS = ["constant", "ensemble_spread", "knn_dist", "mahalanobis"]
+# Size-aware ranges (added 9 Oct), the O3 fix for the largest meals:
+#   size_scaled    sigma = the predicted calorie count (floored at REL_FLOOR_KCAL), so the
+#                  range grows in proportion to the meal
+#   mondrian_size  a separate conformal quantile inside each predicted-size quartile
+#                  (edges from calibration): coverage holds within each quartile by
+#                  construction, which is what "honest for large meals" asks for
+#   cqr            conformalised quantile regression: linear 5% and 95% quantiles of the
+#                  true count given the predicted count, fit on out-of-fold predictions
+#                  over the fit split, then widened on calibration. The only asymmetric
+#                  range: big meals are under-predicted, so it can reach further up.
+SIZE_WIDTHS = ["size_scaled", "mondrian_size", "cqr"]
+REL_FLOOR_KCAL = 50.0
+SIZE_QUARTILES = 4
+GATE_ANSWER = 0.90            # the gate for the answered-only block refuses 1 photo in 10
 USABLE_HALF_WIDTH = 100.0
 GATE_WIDTHS = (150.0, 200.0, 300.0)
 
@@ -86,12 +100,17 @@ def cluster_ci(values: np.ndarray, session: np.ndarray, n_boot: int, seed: int =
 
 
 def evaluate(y, yhat, sigma, q, alpha, session, n_boot, err=None, difficulty=None) -> dict:
+    """Score one set of symmetric ranges yhat +/- q * sigma."""
+    return evaluate_ranges(y, np.maximum(0.0, yhat - q * sigma), yhat + q * sigma, alpha,
+                           session, n_boot, err, sigma if difficulty is None else difficulty,
+                           q=q)
+
+
+def evaluate_ranges(y, lo, hi, alpha, session, n_boot, err=None, difficulty=None,
+                    q=float("nan")) -> dict:
     """Score one set of ranges. `difficulty` is the axis for the honesty check, shared
     by every width model so that they are compared on the same quartiles."""
-    if difficulty is None:
-        difficulty = sigma
-    lo = np.maximum(0.0, yhat - q * sigma)
-    hi = yhat + q * sigma
+    lo = np.maximum(0.0, lo)
     covered = ((y >= lo) & (y <= hi)).astype(float)
     width = hi - lo
     miss = np.maximum(lo - y, 0) + np.maximum(y - hi, 0)
@@ -133,6 +152,92 @@ def draw_mixture(ids, mixture, rng):
     return {d: tags[i] for d, i in zip(ids, rng.choice(len(tags), len(ids), p=p))}
 
 
+def oof_predictions(f, dishes, folds: int = 5) -> tuple[np.ndarray, np.ndarray]:
+    """Out-of-fold calorie predictions over the fit split, folds by plate session.
+
+    The quantile regression inside CQR must learn how truth spreads around a
+    prediction the head did not train on; in-sample fit-set predictions would make
+    that spread look too tight.
+    """
+    X, ids = f.features("fit", "clean")
+    y = np.array([dishes[d].cal for d in ids], float)
+    sess = n5k.session_ids(ids)
+    order = sorted(set(sess.values()))
+    np.random.default_rng(SEED).shuffle(order)
+    fold_of_sess = {s: i % folds for i, s in enumerate(order)}
+    fold = np.array([fold_of_sess[sess[d]] for d in ids])
+    oof = np.empty(len(ids))
+    for k in range(folds):
+        head = ridge_fit(X[fold != k], y[fold != k], f.alphas["cal"])
+        oof[fold == k] = ridge_predict(head, X[fold == k])
+    return oof, y
+
+
+def size_aware_ranges(f, dishes, alpha, yhat_c, yc, yhat_t) -> dict[str, tuple]:
+    """(lo, hi) on test for each size-aware width model, all calibrated on `yc`."""
+    out = {}
+    sig_c, sig_t = np.maximum(yhat_c, REL_FLOOR_KCAL), np.maximum(yhat_t, REL_FLOOR_KCAL)
+    q = conformal_quantile(np.abs(yc - yhat_c) / sig_c, alpha)
+    out["size_scaled"] = (yhat_t - q * sig_t, yhat_t + q * sig_t)
+
+    edges = np.quantile(yhat_c, np.linspace(0, 1, SIZE_QUARTILES + 1)[1:-1])
+    bc, bt = np.digitize(yhat_c, edges), np.digitize(yhat_t, edges)
+    qb = np.array([conformal_quantile(np.abs(yc - yhat_c)[bc == b], alpha)
+                   for b in range(SIZE_QUARTILES)])
+    out["mondrian_size"] = (yhat_t - qb[bt], yhat_t + qb[bt])
+
+    from sklearn.linear_model import QuantileRegressor
+    oof, yf = oof_predictions(f, dishes)
+    qr = {t: QuantileRegressor(quantile=t, alpha=0.0, solver="highs").fit(oof[:, None], yf)
+          for t in (alpha / 2, 1 - alpha / 2)}
+    lo_c, hi_c = (qr[t].predict(yhat_c[:, None]) for t in (alpha / 2, 1 - alpha / 2))
+    Q = conformal_quantile(np.maximum(lo_c - yc, yc - hi_c), alpha)
+    lo_t, hi_t = (qr[t].predict(yhat_t[:, None]) for t in (alpha / 2, 1 - alpha / 2))
+    out["cqr"] = (lo_t - Q, hi_t + Q)
+    return out
+
+
+def answered_only(f, dishes, alpha, n_boot, Xc, yc, yhat_c, Xt, yt, yhat_t, session) -> dict:
+    """Ranges shown only on the photos a gate answers.
+
+    The split-conformal guarantee is marginal over ALL photos. Shown after a gate, the
+    claim a user reads is coverage on the ANSWERED photos, which the marginal guarantee
+    does not give. The gate here is ensemble disagreement (the one gate whose
+    within-size-band win replicated on all three backbones), refusing the riskiest
+    10%, with the threshold set on calibration and then applied unchanged to test (so
+    the share actually answered on test is measured, not imposed). The learned error
+    head cannot be used: it is trained on the calibration errors, so its calibration
+    scores are in-sample.
+
+      all_calib       ranges calibrated on every calibration dish, scored on answered test
+      answered_calib  calibrated on the answered calibration dishes only, the gate fixed
+                      first; this is the version with a guarantee on answered photos
+    """
+    g_c = f.scores(Xc)["ensemble_spread"]
+    g_t = f.scores(Xt)["ensemble_spread"]
+    thr = float(np.quantile(g_c, GATE_ANSWER))
+    ac, at = g_c <= thr, g_t <= thr
+    err_t = np.abs(yhat_t - yt)
+    out = {"gate": "ensemble_spread", "threshold": thr,
+           "answered_calib": float(ac.mean()), "answered_test": float(at.mean()),
+           "answered_test_ci": cluster_ci(at.astype(float), session, n_boot),
+           "mae_answered": float(err_t[at].mean()), "mae_all": float(err_t.mean()),
+           "kept_mean_kcal": float(yt[at].mean()), "ranges": {}}
+    for w in ("constant", "mondrian_size", "cqr"):
+        blk = {}
+        for name, mask in (("all_calib", np.ones_like(ac)), ("answered_calib", ac)):
+            if w == "constant":
+                q = conformal_quantile(np.abs(yc - yhat_c)[mask], alpha)
+                lo, hi = yhat_t - q, yhat_t + q
+            else:
+                lo, hi = size_aware_ranges(f, dishes, alpha, yhat_c[mask], yc[mask],
+                                           yhat_t)[w]
+            blk[name] = evaluate_ranges(yt[at], lo[at], hi[at], alpha, session[at], n_boot,
+                                        err_t[at], yhat_t[at])
+        out["ranges"][w] = blk
+    return out
+
+
 def run(model: str, alpha: float, n_boot: int) -> dict:
     dishes = n5k.load_dishes()
     f = fit_gates(model)
@@ -156,6 +261,11 @@ def run(model: str, alpha: float, n_boot: int) -> dict:
         q = conformal_quantile(np.abs(yc - yhat_c) / sig_c[w], alpha)
         out["clean"][w] = evaluate(yt, yhat_t, sig_t[w], q, alpha, session, n_boot, err_t,
                                    difficulty)
+    for w, (lo, hi) in size_aware_ranges(f, dishes, alpha, yhat_c, yc, yhat_t).items():
+        out["clean"][w] = evaluate_ranges(yt, lo, hi, alpha, session, n_boot, err_t,
+                                          difficulty)
+    out["answered_only"] = answered_only(f, dishes, alpha, n_boot, Xc, yc, yhat_c,
+                                         Xt, yt, yhat_t, session)
 
     # deployment mixtures: one damage level per dish, for calibration and test alike
     rung_feats_c, rung_feats_t = {}, {}
@@ -222,6 +332,21 @@ def report(res: dict) -> None:
         for W, g in r.get("as_gate", {}).items():
             print(f"{w:<17}{W:>5}{100 * g['answered']:9.0f}%{100 * g['coverage']:9.1f}%"
                   f"{g['mae']:7.1f}{g['kept_mean_kcal']:11.0f}{100 * g['big_refused']:12.0f}%")
+    a = res.get("answered_only")
+    if a:
+        lo, hi = a["answered_test_ci"]
+        print(f"\n=== ANSWERED PHOTOS ONLY: gate {a['gate']}, threshold set on calibration "
+              f"to answer {100 * a['answered_calib']:.0f}%; answers "
+              f"{100 * a['answered_test']:.1f}% [{100 * lo:.1f}, {100 * hi:.1f}] of test; "
+              f"MAE {a['mae_answered']:.1f} vs {a['mae_all']:.1f} answering all")
+        print(f"{'width model':<17}{'calibrated on':<16}{'coverage':>19}{'mean w':>8}"
+              f"{'  cov. by kcal q':<18}")
+        for w, blk in a["ranges"].items():
+            for on, r in blk.items():
+                lo, hi = r["coverage_ci"]
+                qk = " ".join(f"{100 * c:3.0f}" for c in r["by_kcal"]["coverage"])
+                print(f"{w:<17}{on:<16}{100 * r['coverage']:6.1f}% [{100 * lo:4.1f},"
+                      f"{100 * hi:5.1f}]{r['width_mean']:8.0f}   {qk}")
     if any("levels" in v for v in res["mixtures"].values()):
         print("\n=== DEPLOYMENT MIXTURES, one damage level per dish")
         print(f"{'mixture':<14}{'width model':<17}{'calibrated on':<15}{'coverage':>19}"
