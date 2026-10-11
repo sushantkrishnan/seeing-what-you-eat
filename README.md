@@ -89,13 +89,6 @@ data/           image manifest (images and feature caches are not committed)
 01_FinalResults.pdf     final-results deck (19 Oct 2026; built by code/build_final_deck.py)
 ```
 
-## History
-
-The code was written from 16 August 2026 in a working folder without version control. The
-repository was created on 17 September 2026; commits dated before that carry author dates
-taken from the files' modification times and contain only files unchanged since then. Files
-that were extended on 17 September appear in that day's commit.
-
 ## Generative AI use
 
 Claude Code (Anthropic) was used throughout, under the group's direction: it wrote most of
